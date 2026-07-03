@@ -23,7 +23,7 @@ describe("bugrun language adapters", () => {
     const command = await buildGenericRunnerCommand({ language: "go", cwd: "/repo", test: "./cart", testArgs: ["-run", "TestDiscount"] });
 
     expect(command.command).toBe("dlv");
-    expect(command.args).toEqual(["dap", "--listen=127.0.0.1:0", "--", "test", "-run", "TestDiscount", "./cart"]);
+    expect(command.args).toEqual(["dap", "--listen=127.0.0.1:0"]);
     expect(command.adapter).toBe("dlv");
   });
 

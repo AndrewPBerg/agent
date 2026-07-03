@@ -181,16 +181,30 @@ Intent:
 Workflow:
 1. Inspect the repo to locate the mentioned file/symbols and nearby tests.
 2. If no focused test target already exercises the path, create the smallest test stimulus needed to drive it.
-3. Choose natural production-code breakpoints at the relevant boundaries, then call \`bugrun_debug\` or \`bugrun_start\` with explicit \`path:line\` breakpoints.
+3. Choose natural production-code breakpoints at the relevant boundaries, then call \`bugrun_debug\` with explicit \`path:line\` breakpoints. Use \`bugrun_start\` only for Python/debugpy interactive sessions.
 4. Keep the first run compact; use expanded/full detail only if stack/locals text is truly needed in LLM context.
 5. Use runtime evidence to answer in the selected mode: solve, explore, harden, or lab.
 6. Do not add temporary print/log instrumentation unless Bugrun cannot answer the question.`;
 }
 
-function looksLikePytestTarget(target?: string): boolean {
+function inferLanguageFromTarget(target?: string): BugrunLanguage {
+  if (!target) return "python";
+  if (target.includes("::") || /\.py$/.test(target)) return "python";
+  if (/\.(tsx?|jsx?)$/.test(target)) return "ts";
+  if (/\.rs$/.test(target) || target.startsWith("cargo ")) return "rust";
+  if (/\.go$/.test(target) || target === "." || target.startsWith("./") || target.startsWith("../")) return "go";
+  return "python";
+}
+
+function looksLikeFocusedTarget(target?: string): boolean {
   if (!target) return false;
   return (
-    target.includes("::") || target.startsWith("tests/") || /(^|\/)test_[^/]*\.py$/.test(target) || /(^|\/)[^/]+_test\.py$/.test(target)
+    target.includes("::") ||
+    target.startsWith("tests/") ||
+    /(^|\/)test_[^/]*\.py$/.test(target) ||
+    /(^|\/)[^/]+_test\.py$/.test(target) ||
+    /\.(test|spec)\.(tsx?|jsx?)$/.test(target) ||
+    /(^|\/)__tests__\/.+\.(tsx?|jsx?)$/.test(target)
   );
 }
 
@@ -233,7 +247,7 @@ class BugrunTracePanel implements Component {
     const statusColor = this.debugResult.exitCode === 0 ? "success" : "error";
     const status = this.debugResult.exitCode === 0 ? "passed" : `exit ${this.debugResult.exitCode ?? "signal"}`;
 
-    const add = (line = "") => lines.push(truncateToWidth(line, w, ""));
+    const add = (line = "") => lines.push(truncateToWidth(line, w, "…"));
     add(
       `${th.fg("accent", th.bold("Bugrun Trace"))} ${th.fg(statusColor, status)} ${th.fg("muted", `• ${this.debugResult.hits.length} hit(s) • ${this.debugResult.durationMs}ms`)}`,
     );
@@ -255,17 +269,20 @@ class BugrunTracePanel implements Component {
 
       const callers = hit.stack
         .slice(1, 4)
-        .map((frame) => `${frame.name} ${relativeDisplay(this.debugResult.cwd, frame.path)}:${frame.line}`)
-        .join(" ← ");
-      if (callers) add(th.fg("dim", `callers: ${callers}`));
+        .map((frame) => `${frame.name} ${relativeDisplay(this.debugResult.cwd, frame.path)}:${frame.line}`);
+      if (callers.length) {
+        add(th.fg("dim", "callers"));
+        for (const caller of callers) add(th.fg("dim", `  ← ${caller}`));
+      }
 
-      for (const sourceLine of sourceExcerpt(this.debugResult.cwd, hit.frame.path, hit.frame.line, this.debugResult.breakpoints, th))
+      for (const sourceLine of sourceExcerpt(this.debugResult.cwd, hit.frame.path, hit.frame.line, this.debugResult.breakpoints, th, w))
         add(sourceLine);
 
       const locals = selectTraceLocals(hit.locals).slice(0, 6);
       if (locals.length) {
         add(th.fg("muted", "locals"));
-        for (const variable of locals) add(`  ${th.fg("accent", variable.name)} = ${compactTraceValue(variable.value)}`);
+        for (const variable of locals)
+          add(`  ${th.fg("accent", variable.name)} = ${compactTraceValue(variable.value, Math.max(48, w - 14))}`);
       }
     }
 
@@ -306,6 +323,7 @@ function sourceExcerpt(
   line: number,
   breakpoints: PythonDebugResult["breakpoints"],
   theme: BugrunTheme,
+  panelWidth = 100,
 ): string[] {
   if (!path || !isInside(cwd, path)) return [theme.fg("dim", "  source unavailable outside workspace")];
 
@@ -323,7 +341,9 @@ function sourceExcerpt(
       const marker = isHit ? theme.fg("accent", "▶") : isBreakpoint ? theme.fg("warning", "●") : " ";
       const number = String(current).padStart(width, " ");
       const prefix = `${marker} ${theme.fg(isHit ? "accent" : "dim", number)} │ `;
-      lines.push(`${prefix}${source[current - 1] ?? ""}`);
+      const maxCodeWidth = Math.max(20, panelWidth - width - 6);
+      const code = truncateToWidth((source[current - 1] ?? "").replace(/\t/g, "  "), maxCodeWidth, "…");
+      lines.push(`${prefix}${code}`);
     }
     return lines;
   } catch {
@@ -611,7 +631,7 @@ export default function bugrun(pi: ExtensionAPI) {
       question: Type.Optional(Type.String({ description: "Runtime question to answer from breakpoint evidence." })),
       language: Type.Optional(
         stringEnum(["python", "rust", "go", "ts"] as const, {
-          description: "Debug language. Defaults to python for backwards compatibility.",
+          description: "Debug language. Defaults to inferred language for obvious test targets, otherwise python for compatibility.",
         }),
       ),
       cwd: Type.Optional(Type.String({ description: "Project directory for the test stimulus. Defaults to Pi cwd." })),
@@ -641,7 +661,7 @@ export default function bugrun(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params: BugrunParams, signal, onUpdate, ctx) {
-      const language = parseLanguage(params.language);
+      const language = parseLanguage(params.language ?? inferLanguageFromTarget(params.test));
       if (language !== "python") {
         const cwd = resolve(ctx.cwd, params.cwd ?? ".");
         const breakpoints = params.breakpoints ?? [];
@@ -736,9 +756,10 @@ export default function bugrun(pi: ExtensionAPI) {
         const request = intentRequest.request || raw;
         try {
           const parsed = parseBugrunArgs(request, ctx.cwd);
-          const intent = intentRequest.intent ?? (looksLikePytestTarget(parsed.test) ? "solve" : "explore");
+          const language = inferLanguageFromTarget(parsed.test);
+          const intent = intentRequest.intent ?? (looksLikeFocusedTarget(parsed.test) ? "solve" : "explore");
           setBugrunModeUi(ctx, intent);
-          if (!looksLikePytestTarget(parsed.test)) {
+          if (!looksLikeFocusedTarget(parsed.test)) {
             pi.sendUserMessage(buildExploratoryPrompt(ctx.cwd, request, intent));
             return;
           }
@@ -750,6 +771,7 @@ export default function bugrun(pi: ExtensionAPI) {
               parsed.breakpoints.map((breakpoint) => `${breakpoint.path}:${breakpoint.line}`),
               false,
               intent,
+              language,
             ),
           );
           return;
@@ -793,7 +815,7 @@ export default function bugrun(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => ({
     systemPrompt:
       event.systemPrompt +
-      "\n\nBugrun policy: Bugrun is an automatic runtime-flow toolbelt option, not only a slash command. When the user asks to understand Python, Rust, Go, or TypeScript code flow, execution paths, call stacks, state transitions, or how one file/module connects to another, pick the intent first: solve (bug fix), explore (mental model), harden (abstraction QA), or lab (playful proof). Use static inspection only to choose the narrowest focused test/stimulus and natural breakpoints, then prefer runtime DAP evidence via bugrun_debug/bugrun_start (focused tests as stimulus, DAP as microscope) before answering from static analysis alone. If no runnable stimulus or adapter is available, say that explicitly and provide the best static map.",
+      "\n\nBugrun policy: Bugrun is an automatic runtime-flow toolbelt option, not only a slash command. When the user asks to understand Python, Rust, Go, or TypeScript code flow, execution paths, call stacks, state transitions, or how one file/module connects to another, pick the intent first: solve (bug fix), explore (mental model), harden (abstraction QA), or lab (playful proof). Use static inspection only to choose the narrowest focused test/stimulus and natural breakpoints, then prefer runtime DAP evidence via bugrun_debug (or bugrun_start only for Python/debugpy interactive sessions) before answering from static analysis alone. If no runnable stimulus or adapter is available, say that explicitly and provide the best static map.",
   }));
 
   pi.on("session_shutdown", async (_event, ctx) => {

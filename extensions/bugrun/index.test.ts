@@ -120,6 +120,34 @@ describe("bugrun extension", () => {
     ).rejects.toThrow("requires at least one breakpoint");
   });
 
+  it("infers TypeScript at the tool boundary when language is omitted", async () => {
+    const pi = createMockPi();
+    bugrun(pi);
+
+    await expect(
+      pi.tools
+        .get("bugrun_debug")
+        .execute(
+          "tool",
+          { test: "src/hooks/__tests__/leadsLiveUpdate.test.ts" },
+          new AbortController().signal,
+          undefined,
+          createMockContext(),
+        ),
+    ).rejects.toThrow("bugrun ts requires at least one breakpoint");
+  });
+
+  it("queues focused TypeScript prompts with language ts", async () => {
+    const pi = createMockPi();
+    pi.sendUserMessage = vi.fn();
+    bugrun(pi);
+
+    await pi.commands.get("bugrun").handler("debug src/hooks/__tests__/leadsLiveUpdate.test.ts", createMockContext({ cwd: "/repo" }));
+
+    expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("language: ts"));
+    expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("src/hooks/__tests__/leadsLiveUpdate.test.ts"));
+  });
+
   it("surfaces clear in help and completions", async () => {
     const pi = createMockPi();
     bugrun(pi);

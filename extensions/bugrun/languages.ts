@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, execFile as execFileCallback, spawn } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:net";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -57,9 +57,9 @@ export async function buildGenericRunnerCommand(options: GenericDebugOptions): P
     case "go":
       return {
         command: "dlv",
-        args: ["dap", "--listen=127.0.0.1:0", "--", "test", ...(options.testArgs ?? []), options.test],
+        args: ["dap", "--listen=127.0.0.1:0"],
         adapter: options.adapter ?? "dlv",
-        note: "Go go test via Delve DAP",
+        note: "Go tests via Delve DAP launch mode=test",
       };
     case "ts":
       return {
@@ -109,21 +109,30 @@ export async function runGenericDebug(options: GenericDebugOptions, signal?: Abo
     await launch;
 
     const hits: BreakpointHit[] = [];
+    let debuggeeExitCode: number | null = null;
+    let sawDebuggeeExit = false;
     while (Date.now() < deadline) {
       const event = await Promise.race([
-        dap.waitForEvent<{ reason?: string; threadId?: number }>(
+        dap.waitForEvent<{ reason?: string; threadId?: number; exitCode?: number }>(
           (candidate) => candidate.event === "stopped" || candidate.event === "terminated" || candidate.event === "exited",
           timeLeft(),
         ),
         adapter.exited.then(() => undefined),
       ]);
-      if (!event || event.event === "terminated" || event.event === "exited") break;
+      if (!event) break;
+      if (event.event === "terminated" || event.event === "exited") {
+        sawDebuggeeExit = true;
+        if (typeof event.body?.exitCode === "number") debuggeeExitCode = event.body.exitCode;
+        break;
+      }
       const threadId = event.body?.threadId;
       if (typeof threadId !== "number") break;
       if (hits.length < maxHits) hits.push(await captureHit(dap, cwd, threadId, event.body?.reason ?? "stopped", timeLeft()));
       await dap.request("continue", { threadId }, timeLeft());
     }
 
+    const adapterExitCode = adapter.exitCode();
+    const exitCode = debuggeeExitCode ?? adapterExitCode ?? (sawDebuggeeExit ? 0 : null);
     return {
       language: options.language,
       cwd,
@@ -132,8 +141,8 @@ export async function runGenericDebug(options: GenericDebugOptions, signal?: Abo
       args: runner.args,
       breakpoints,
       hits,
-      exitCode: adapter.exitCode(),
-      signal: adapter.signal(),
+      exitCode,
+      signal: exitCode === null ? adapter.signal() : null,
       stdout: adapter.stdout(),
       stderr: adapter.stderr(),
       durationMs: Date.now() - startedAt,
@@ -156,17 +165,18 @@ function initializeArgs(language: Exclude<BugrunLanguage, "python">) {
   };
 }
 
-async function launchArgs(options: GenericDebugOptions, cwd: string, port?: number) {
+async function launchArgs(options: GenericDebugOptions, cwd: string, _port?: number) {
   const override = options.command?.trim() ? splitCommand(options.command) : undefined;
   if (options.language === "go") {
     if (override) throw new Error("Bugrun Go does not support arbitrary command overrides; use test/testArgs with dlv dap mode=test.");
+    const target = resolveGoTestTarget(cwd, options.test, normalizeGoTestBinaryArgs(options.testArgs ?? []));
     return {
       name: "bugrun go test",
       type: "go",
       request: "launch",
       mode: "test",
-      program: cwd,
-      args: [...(options.testArgs ?? []), options.test],
+      program: target.program,
+      args: target.args,
     };
   }
   if (options.language === "rust") {
@@ -189,7 +199,6 @@ async function launchArgs(options: GenericDebugOptions, cwd: string, port?: numb
     runtimeExecutable,
     runtimeArgs,
     console: "internalConsole",
-    port,
   };
 }
 
@@ -215,11 +224,91 @@ async function startAdapter(options: GenericDebugOptions, runner: GenericRunnerC
     return processAdapter(child, await connectDap("127.0.0.1", port, 15_000, signal), port);
   }
 
+  if (options.language === "ts") {
+    const adapter = await resolveAdapterExecutable(runner.adapter);
+    const tcpMode = await shouldUseTcpJsDebugAdapter(adapter);
+    if (tcpMode) {
+      const port = await getFreePort();
+      const launch = await jsDebugServerLaunch(adapter, port);
+      const child = spawn(launch.command, launch.args, {
+        cwd: options.cwd,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        signal,
+      }) as ChildProcessWithoutNullStreams;
+      return processAdapter(child, await connectDap("127.0.0.1", port, 15_000, signal), port, { killProcessGroup: true });
+    }
+
+    const child = spawn(adapter, [], {
+      cwd: options.cwd,
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      signal,
+    }) as ChildProcessWithoutNullStreams;
+    return processAdapter(child, new DapClient(child.stdin, child.stdout), undefined, { killProcessGroup: true });
+  }
+
   const child = spawn(runner.adapter, [], { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"], signal }) as ChildProcessWithoutNullStreams;
   return processAdapter(child, new DapClient(child.stdin, child.stdout));
 }
 
-function processAdapter(child: ChildProcessWithoutNullStreams, dap: DapClient, port?: number): AdapterProcess {
+async function resolveAdapterExecutable(adapter: string): Promise<string> {
+  if (adapter.includes("/") || adapter.includes("\\")) {
+    try {
+      return await realpath(adapter);
+    } catch {
+      return adapter;
+    }
+  }
+  try {
+    const { stdout } = await execFile("sh", ["-lc", `command -v -- ${shellQuote(adapter)}`], { timeout: 3_000 });
+    return stdout.trim().split(/\r?\n/)[0] || adapter;
+  } catch {
+    return adapter;
+  }
+}
+
+async function shouldUseTcpJsDebugAdapter(adapter: string): Promise<boolean> {
+  if (/(^|[/\\])dapDebugServer\.js$/.test(adapter)) return true;
+  try {
+    const content = await readFile(adapter, "utf8");
+    if (content.includes("MCP Client -> DAP Server") || content.includes("process.stdin.on('data'")) return false;
+    if (content.includes("dapDebugServer.js")) return true;
+    return content.includes("listening at") && content.includes("socket path") && content.includes("host=localhost");
+  } catch {
+    return false;
+  }
+}
+
+async function jsDebugServerLaunch(adapter: string, port: number): Promise<{ command: string; args: string[] }> {
+  const content = await readFile(adapter, "utf8").catch(() => "");
+  const needsNode = adapter.endsWith(".js") || content.startsWith('"use strict"') || content.startsWith("'use strict'");
+  return needsNode ? { command: process.execPath, args: [adapter, String(port)] } : { command: adapter, args: [String(port)] };
+}
+
+function normalizeGoTestBinaryArgs(args: string[]) {
+  return args.map((arg) => {
+    if (arg === "-run") return "-test.run";
+    if (arg.startsWith("-run=")) return `-test.run=${arg.slice("-run=".length)}`;
+    if (arg === "-v") return "-test.v";
+    return arg;
+  });
+}
+
+function resolveGoTestTarget(cwd: string, test: string, testArgs: string[]) {
+  const trimmed = test.trim();
+  const isPackageTarget = trimmed === "." || trimmed.startsWith("./") || trimmed.startsWith("../") || trimmed.startsWith("/");
+  if (isPackageTarget) return { program: resolve(cwd, trimmed), args: testArgs };
+  const hasRunFilter = testArgs.some((arg) => arg === "-test.run" || arg.startsWith("-test.run="));
+  return { program: cwd, args: hasRunFilter ? testArgs : ["-test.run", trimmed, ...testArgs] };
+}
+
+function processAdapter(
+  child: ChildProcessWithoutNullStreams,
+  dap: DapClient,
+  port?: number,
+  options: { killProcessGroup?: boolean } = {},
+): AdapterProcess {
   let stdout = "";
   let stderr = "";
   let exitCode: number | null = null;
@@ -243,11 +332,23 @@ function processAdapter(child: ChildProcessWithoutNullStreams, dap: DapClient, p
     stderr: () => stderr,
     stop: async () => {
       if (exitCode !== null) return;
-      child.kill("SIGTERM");
+      killAdapterProcess(child, options.killProcessGroup, "SIGTERM");
       await Promise.race([exited, delay(1_000)]);
-      if (exitCode === null) child.kill("SIGKILL");
+      if (exitCode === null) killAdapterProcess(child, options.killProcessGroup, "SIGKILL");
     },
   };
+}
+
+function killAdapterProcess(child: ChildProcessWithoutNullStreams, killProcessGroup: boolean | undefined, signal: NodeJS.Signals) {
+  if (killProcessGroup && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to killing just the adapter process when process groups are unavailable.
+    }
+  }
+  child.kill(signal);
 }
 
 async function buildRustTestExecutable(cwd: string, options: GenericDebugOptions): Promise<string> {
@@ -293,11 +394,15 @@ function splitCommand(command: string): string[] {
 
 async function commandExists(command: string): Promise<boolean> {
   try {
-    await execFile(command, ["--version"], { timeout: 3_000 });
+    await execFile("sh", ["-lc", `command -v -- ${shellQuote(command)}`], { timeout: 3_000 });
     return true;
   } catch {
     return false;
   }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function normalizeBreakpoints(cwd: string, breakpoints: PythonBreakpoint[]): Promise<PythonBreakpoint[]> {
