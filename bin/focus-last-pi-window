@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+id="${1:-}"
+state_file="${PI_AGENT_DIR:-${HOME}/.pi/agent}/last-notify-window"
+address=""
+[[ -r "$state_file" ]] && address="$(tr -d '\r\n' < "$state_file")"
+
+if [[ "$address" == 0x* ]]; then
+  client="$({ hyprctl clients -j 2>/dev/null || true; } | jq -c --arg addr "$address" '.[] | select(.address == $addr) | {workspace: .workspace, hidden: .hidden}' 2>/dev/null | head -n1)"
+  workspace_id="$(jq -r '.workspace.id // empty' <<<"$client" 2>/dev/null || true)"
+  workspace_name="$(jq -r '.workspace.name // empty' <<<"$client" 2>/dev/null || true)"
+  hidden="$(jq -r '.hidden // false' <<<"$client" 2>/dev/null || true)"
+
+  if [[ "$workspace_name" == special:* ]]; then
+    special_name="${workspace_name#special:}"
+    if [[ "$hidden" == "true" ]]; then
+      hyprctl dispatch togglespecialworkspace "$special_name" >/dev/null 2>&1 || true
+    fi
+  elif [[ "$workspace_id" =~ ^[1-9][0-9]*$ ]]; then
+    hyprctl dispatch workspace "$workspace_id" >/dev/null 2>&1 || true
+  fi
+
+  hyprctl dispatch focuswindow "address:$address" >/dev/null 2>&1 || true
+fi
+
+if [[ "$id" =~ ^[0-9]+$ ]]; then
+  makoctl dismiss -n "$id" >/dev/null 2>&1 || true
+fi

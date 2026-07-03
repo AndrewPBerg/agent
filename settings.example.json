@@ -1,0 +1,4 @@
+{
+  "example": true,
+  "notes": "Copy to settings.json for local use. Do not commit real local settings or secrets."
+}

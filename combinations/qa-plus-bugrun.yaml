@@ -1,0 +1,29 @@
+id: qa-plus-bugrun
+description: Pair QA/diff review with BugRun runtime evidence for Python changes.
+priority: 50
+when:
+  prompts:
+    - qa
+    - review
+    - stress test
+    - worked-on diff
+    - current diff
+  fileExtensions:
+    - .py
+  tools:
+    - bugrun_debug
+guidance: |
+  During QA of Python changes, inspect the worked-on diff first and identify the behavior being claimed.
+  If correctness depends on runtime state, call path, stack frames, locals, or state transitions, use BugRun before approving or patching.
+  Use pytest as the executable stimulus and BugRun as the microscope; keep the first run compact unless expanded locals are needed.
+  Patch only concrete bugs exposed by evidence, then rerun the narrowest meaningful check.
+preferredTools:
+  - supp.diff-context
+  - bugrun.runtime-evidence
+  - bash.focused-tests
+  - read
+obligations:
+  - Inspect staged, unstaged, and untracked changes.
+  - Run a focused verification check or explain why one is unavailable.
+  - Use runtime evidence when Python behavior is ambiguous.
+  - Report remaining risks plainly.
