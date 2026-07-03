@@ -95,6 +95,31 @@ describe("bugrun extension", () => {
     expect(pi.sendUserMessage).not.toHaveBeenCalled();
   });
 
+  it("exposes multi-language bugrun_debug parameters", () => {
+    const pi = createMockPi();
+    bugrun(pi);
+
+    const schema = JSON.stringify(pi.tools.get("bugrun_debug").parameters);
+
+    expect(schema).toContain("language");
+    expect(schema).toContain("rust");
+    expect(schema).toContain("go");
+    expect(schema).toContain("ts");
+    expect(schema).toContain("command");
+    expect(schema).toContain("testArgs");
+  });
+
+  it("validates non-Python breakpoints before adapter checks", async () => {
+    const pi = createMockPi();
+    bugrun(pi);
+
+    await expect(
+      pi.tools
+        .get("bugrun_debug")
+        .execute("tool", { language: "rust", test: "cart_discount" }, new AbortController().signal, undefined, createMockContext()),
+    ).rejects.toThrow("requires at least one breakpoint");
+  });
+
   it("surfaces clear in help and completions", async () => {
     const pi = createMockPi();
     bugrun(pi);
@@ -107,6 +132,7 @@ describe("bugrun extension", () => {
     await command.handler("help", ctx);
 
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/bugrun clear"), "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("--language rust"), "info");
   });
 
   it("renders a source-centered trace panel without using tool content", () => {
@@ -169,7 +195,10 @@ describe("bugrun extension", () => {
     const result = hook!({ systemPrompt: "base" });
 
     expect(result.systemPrompt).toContain("base");
+    expect(result.systemPrompt).toContain("automatic runtime-flow toolbelt option");
     expect(result.systemPrompt).toContain("runtime DAP evidence");
+    expect(result.systemPrompt).toContain("Rust, Go, or TypeScript");
+    expect(result.systemPrompt).toContain("how one file/module connects to another");
     expect(result.systemPrompt).toContain("solve (bug fix), explore (mental model), harden (abstraction QA), or lab");
   });
 });

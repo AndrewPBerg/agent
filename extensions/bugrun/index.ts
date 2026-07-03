@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { type BugrunLanguage, type GenericDebugResult, parseLanguage, runGenericDebug } from "./languages";
 import {
   formatPythonDebugFullResult,
   formatPythonDebugResult,
@@ -28,6 +29,9 @@ type BugrunTheme = {
 };
 
 type BugrunConfig = {
+  rust?: { command?: string; testArgs?: string[]; adapter?: string; timeoutMs?: number; detailLevel?: BugrunDetailLevel };
+  go?: { command?: string; testArgs?: string[]; adapter?: string; timeoutMs?: number; detailLevel?: BugrunDetailLevel };
+  ts?: { command?: string; testArgs?: string[]; adapter?: string; timeoutMs?: number; detailLevel?: BugrunDetailLevel };
   python?: {
     python?: string;
     runner?: PythonRunner;
@@ -46,8 +50,12 @@ type BugrunSessionCommandParams = { sessionId?: string; hitIndex?: number; detai
 
 type BugrunParams = {
   question?: string;
+  language?: BugrunLanguage;
   cwd?: string;
   test: string;
+  command?: string;
+  testArgs?: string[];
+  adapter?: string;
   breakpoints?: string[];
   python?: string;
   runner?: PythonRunner;
@@ -90,7 +98,7 @@ function readConfig(ctx: ExtensionContext): BugrunConfig {
   }
 }
 
-function buildOptions(params: BugrunParams, ctx: ExtensionContext): PythonDebugOptions {
+function buildPythonOptions(params: BugrunParams, ctx: ExtensionContext): PythonDebugOptions {
   const config = readConfig(ctx).python ?? {};
   const cwd = resolve(ctx.cwd, params.cwd ?? ".");
   const breakpointSpecs = params.breakpoints ?? [];
@@ -130,24 +138,33 @@ function intentGuidance(intent: BugrunIntent): string {
   }
 }
 
-function buildFocusedPrompt(cwd: string, test: string, breakpoints: string[], fixture = false, intent: BugrunIntent = "solve"): string {
+function buildFocusedPrompt(
+  cwd: string,
+  test: string,
+  breakpoints: string[],
+  fixture = false,
+  intent: BugrunIntent = "solve",
+  language: BugrunLanguage = "python",
+): string {
   const fixtureOptions = fixture
     ? '\n- runner: uv\n- uvPackages: ["pytest"]\n- uvNoProject: true\n- pytestArgs: ["-q", "-p", "no:cacheprovider"]'
     : "";
-  return `Use Bugrun as a Python runtime code-flow microscope for this focused pytest stimulus.
+  const stimulus = language === "python" ? "focused pytest stimulus" : `${language} test/debug stimulus`;
+  return `Use Bugrun as a ${language} runtime code-flow microscope for this ${stimulus}.
 
 ${intentGuidance(intent)}
 
 Use the \`bugrun_debug\` tool with:
+- language: ${language}
 - cwd: ${cwd}
 - test: ${test}
 - breakpoints: ${breakpoints.length ? breakpoints.map((item) => `\`${item}\``).join(", ") : "(inspect first and add one natural production-code breakpoint)"}${fixtureOptions}
 
-Use pytest as the executable stimulus, not as the whole answer. Keep the first run compact; use \`detailLevel: "full"\` only if expanded hit/locals text is truly needed in LLM context. Explain the call path, important stack frames, locals/state transitions, and what runtime evidence showed that static analysis alone would miss. Follow the selected mode above for whether to patch, test, or narrate next.`;
+Use the focused test command as the executable stimulus, not as the whole answer. Keep the first run compact; use \`detailLevel: "full"\` only if expanded hit/locals text is truly needed in LLM context. Explain the call path, important stack frames, locals/state transitions, and what runtime evidence showed that static analysis alone would miss. Follow the selected mode above for whether to patch, test, or narrate next.`;
 }
 
 function buildExploratoryPrompt(cwd: string, request: string, intent: BugrunIntent = "explore"): string {
-  return `Use Bugrun as a Python runtime code-flow microscope.
+  return `Use Bugrun as a multi-language runtime code-flow microscope.
 
 ${intentGuidance(intent)}
 
@@ -162,9 +179,9 @@ Intent:
 - Do not stop at static analysis. Use static reading only to choose the smallest executable stimulus and natural breakpoints.
 
 Workflow:
-1. Inspect the repo to locate the mentioned Python file/symbols and nearby tests.
-2. If no focused pytest target already exercises the path, create the smallest pytest stimulus needed to drive it.
-3. Choose natural production-code breakpoints at the relevant boundaries, then call \`bugrun_debug\` or \`bugrun_start\` with explicit \`path.py:line\` breakpoints.
+1. Inspect the repo to locate the mentioned file/symbols and nearby tests.
+2. If no focused test target already exercises the path, create the smallest test stimulus needed to drive it.
+3. Choose natural production-code breakpoints at the relevant boundaries, then call \`bugrun_debug\` or \`bugrun_start\` with explicit \`path:line\` breakpoints.
 4. Keep the first run compact; use expanded/full detail only if stack/locals text is truly needed in LLM context.
 5. Use runtime evidence to answer in the selected mode: solve, explore, harden, or lab.
 6. Do not add temporary print/log instrumentation unless Bugrun cannot answer the question.`;
@@ -394,6 +411,30 @@ function resolveSession(sessions: Map<string, PythonDebugSession>, sessionId?: s
   throw new Error(`Multiple live Bugrun sessions: ${[...sessions.keys()].join(", ")}. Pass sessionId.`);
 }
 
+function formatGenericDebugResult(result: GenericDebugResult, question?: string): string {
+  const lines = [`Bugrun ${result.language}/DAP summary`];
+  if (question?.trim()) lines.push(`Question: ${question.trim()}`);
+  lines.push(`Test target: ${result.test}`);
+  lines.push(
+    `Exit: ${result.exitCode ?? "signal"}${result.signal ? ` (${result.signal})` : ""}; hits: ${result.hits.length}; duration: ${result.durationMs}ms`,
+  );
+  lines.push(`Command: ${[result.command, ...result.args].join(" ")}`);
+  lines.push("");
+  lines.push("Breakpoint traversal:");
+  if (!result.hits.length) lines.push("- none");
+  for (const [index, hit] of result.hits.entries()) {
+    lines.push(`- #${index + 1} ${hit.frame.name} at ${relativeDisplay(result.cwd, hit.frame.path)}:${hit.frame.line}`);
+    const caller = hit.stack[1];
+    if (caller) lines.push(`  caller: ${caller.name} ${relativeDisplay(result.cwd, caller.path)}:${caller.line}`);
+    const locals = selectTraceLocals(hit.locals).slice(0, 4);
+    if (locals.length)
+      lines.push(`  locals: ${locals.map((variable) => `${variable.name}=${compactTraceValue(variable.value, 120)}`).join("; ")}`);
+  }
+  const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
+  if (output) lines.push("", `Process output summary: ${compactTraceValue(output, 240)}`);
+  return lines.join("\n");
+}
+
 function statusToResult(status: PythonDebugSessionStatus): PythonDebugResult {
   return {
     cwd: status.cwd,
@@ -458,7 +499,7 @@ export default function bugrun(pi: ExtensionAPI) {
     async execute(_toolCallId, params: BugrunSessionParams, signal, onUpdate, ctx) {
       const sessionId = params.sessionId?.trim() || `bugrun-${Date.now().toString(36)}`;
       if (sessions.has(sessionId)) throw new Error(`Bugrun session already exists: ${sessionId}`);
-      const options = buildOptions(params, ctx);
+      const options = buildPythonOptions(params, ctx);
       ctx.ui.setStatus("bugrun", `bugrun:${sessionId} starting`);
       onUpdate?.({ content: [{ type: "text", text: `Starting Bugrun session ${sessionId} for ${options.test}...` }] });
       const session = await PythonDebugSession.start(sessionId, options, signal);
@@ -557,22 +598,28 @@ export default function bugrun(pi: ExtensionAPI) {
     name: "bugrun_debug",
     label: "Bugrun Debug",
     description:
-      "Run one focused Python pytest stimulus under debugpy, stop at explicit breakpoints, and return stack/locals/runtime code-flow evidence. MVP supports Python only and requires at least one path.py:line breakpoint.",
+      "Run one focused test stimulus under DAP, stop at explicit breakpoints, and return stack/locals/runtime code-flow evidence. Python/debugpy is fully supported; Rust/Go/TS adapters validate commands and report missing DAP tooling clearly.",
     promptSnippet:
-      "Investigate Python code flow with debugpy breakpoints, stack frames, and locals instead of relying only on pytest output or static analysis.",
+      "Investigate code flow with DAP breakpoints, stack frames, and locals instead of relying only on test output or static analysis.",
     promptGuidelines: [
-      "Use bugrun_debug when runtime stack/locals would clarify Python code flow better than static analysis or pytest results alone.",
-      "bugrun_debug requires explicit breakpoints like src/foo.py:42; choose natural production-code breakpoints at the relevant boundary or state transition.",
+      "Use bugrun_debug when runtime stack/locals would clarify code flow better than static analysis or test output alone.",
+      "bugrun_debug requires explicit breakpoints like src/foo.py:42 or src/lib.rs:42; choose natural production-code breakpoints at the relevant boundary or state transition.",
       "bugrun_debug defaults to compact LLM content; request detailLevel=full only when you need expanded hit/locals text in context.",
       "After bugrun_debug returns evidence, explain call path and locals/state transitions; summarize large objects instead of pasting huge locals wholesale, and patch only when runtime evidence exposes a concrete bug.",
     ],
     parameters: Type.Object({
       question: Type.Optional(Type.String({ description: "Runtime question to answer from breakpoint evidence." })),
-      cwd: Type.Optional(Type.String({ description: "Project directory for pytest. Defaults to Pi cwd." })),
-      test: Type.String({ description: "Focused pytest target, e.g. tests/test_cart.py::test_discount_total." }),
-      breakpoints: Type.Optional(
-        Type.Array(Type.String({ description: "Breakpoint spec path.py:line, relative to cwd unless absolute." })),
+      language: Type.Optional(
+        stringEnum(["python", "rust", "go", "ts"] as const, {
+          description: "Debug language. Defaults to python for backwards compatibility.",
+        }),
       ),
+      cwd: Type.Optional(Type.String({ description: "Project directory for the test stimulus. Defaults to Pi cwd." })),
+      test: Type.String({ description: "Focused test target, e.g. pytest node id, cargo test name, Go package/test, or TS test file." }),
+      command: Type.Optional(Type.String({ description: "Language-specific test/debug command override for Rust/Go/TS." })),
+      testArgs: Type.Optional(Type.Array(Type.String({ description: "Language-specific test runner arguments for Rust/Go/TS." }))),
+      adapter: Type.Optional(Type.String({ description: "DAP adapter executable/name for Rust/Go/TS, e.g. lldb-dap, dlv, node." })),
+      breakpoints: Type.Optional(Type.Array(Type.String({ description: "Breakpoint spec path:line, relative to cwd unless absolute." }))),
       python: Type.Optional(Type.String({ description: "Python executable. Defaults to python3 or .pi/debug.json." })),
       runner: Type.Optional(stringEnum(["auto", "direct", "uv"] as const)),
       uvPackages: Type.Optional(
@@ -594,7 +641,33 @@ export default function bugrun(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params: BugrunParams, signal, onUpdate, ctx) {
-      const options = buildOptions(params, ctx);
+      const language = parseLanguage(params.language);
+      if (language !== "python") {
+        const cwd = resolve(ctx.cwd, params.cwd ?? ".");
+        const breakpoints = params.breakpoints ?? [];
+        if (!breakpoints.length) throw new Error(`bugrun ${language} requires at least one breakpoint (path:line).`);
+        for (const spec of breakpoints) parseBreakpointSpec(spec, cwd);
+        const config = readConfig(ctx)[language] ?? {};
+        const result = await runGenericDebug(
+          {
+            language,
+            cwd,
+            test: params.test,
+            command: params.command ?? config.command,
+            testArgs: params.testArgs ?? config.testArgs,
+            adapter: params.adapter ?? config.adapter,
+            breakpoints: breakpoints.map((spec) => parseBreakpointSpec(spec, cwd)),
+            maxHits: params.maxHits,
+            timeoutMs: params.timeoutMs ?? config.timeoutMs,
+          },
+          signal,
+        );
+        return {
+          content: [{ type: "text", text: formatGenericDebugResult(result, params.question) }],
+          details: { ...result, result, detailLevel: "summary" },
+        };
+      }
+      const options = buildPythonOptions(params, ctx);
       ctx.ui.setStatus("bugrun", "bugrun:debugpy running");
       onUpdate?.({ content: [{ type: "text", text: `Starting debugpy pytest session for ${options.test}...` }] });
 
@@ -634,7 +707,7 @@ export default function bugrun(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("bugrun", {
-    description: "Use DAP/debugpy as a runtime microscope for Python code flow",
+    description: "Use DAP as a runtime microscope for Python, Rust, Go, or TypeScript code flow",
     getArgumentCompletions: (prefix: string) => {
       const normalized = prefix.trim().toLowerCase();
       const items = ["solve", "explore", "harden", "lab", "clear", "fixture", "help"]
@@ -700,9 +773,10 @@ export default function bugrun(pi: ExtensionAPI) {
         ctx.ui.notify(
           [
             "Usage:",
-            "/bugrun [solve|explore|harden|lab] <question-or-pytest-target>",
-            "/bugrun <pytest-target> <breakpoint.py:line> [more breakpoints...]",
+            "/bugrun [solve|explore|harden|lab] <question-or-test-target>",
+            "/bugrun <test-target> <breakpoint:line> [more breakpoints...]",
             "/bugrun fixture  # queues the included broken Python fixture",
+            "/bugrun solve --language rust my_test src/lib.rs:42  # agent will translate to bugrun_debug language=rust",
             "/bugrun clear  # stop live sessions and clear Bugrun UI",
             "Examples:",
             "/bugrun explore native.py in relation to pydantic Graph",
@@ -719,7 +793,7 @@ export default function bugrun(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => ({
     systemPrompt:
       event.systemPrompt +
-      "\n\nBugrun policy: when the user asks to understand Python code flow or invokes /bugrun, pick the intent first: solve (bug fix), explore (mental model), harden (abstraction QA), or lab (playful proof). Prefer runtime DAP evidence via bugrun_debug/bugrun_start (pytest as stimulus, debugpy as microscope) before relying only on static analysis, pytest output, or temporary print/log instrumentation.",
+      "\n\nBugrun policy: Bugrun is an automatic runtime-flow toolbelt option, not only a slash command. When the user asks to understand Python, Rust, Go, or TypeScript code flow, execution paths, call stacks, state transitions, or how one file/module connects to another, pick the intent first: solve (bug fix), explore (mental model), harden (abstraction QA), or lab (playful proof). Use static inspection only to choose the narrowest focused test/stimulus and natural breakpoints, then prefer runtime DAP evidence via bugrun_debug/bugrun_start (focused tests as stimulus, DAP as microscope) before answering from static analysis alone. If no runnable stimulus or adapter is available, say that explicitly and provide the best static map.",
   }));
 
   pi.on("session_shutdown", async (_event, ctx) => {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,20 @@ describe("combinations extension", () => {
     expect(prompt).toContain("qa-plus-bugrun");
     expect(prompt).toContain("Use BugRun when Python QA depends on runtime state");
     expect(prompt).not.toContain("fileExtensions:");
+  });
+
+  it("selects the grocery-plus-yosoi card for realistic meal prep prompts", async () => {
+    const yaml = await readFile("combinations/grocery-plus-yosoi.yaml", "utf8");
+    const card = parseCombinationYaml(yaml, "combinations/grocery-plus-yosoi.yaml");
+
+    const selected = selectCombinationCards([card], {
+      prompt: "I need meal prep for the week, Korean honey BBQ, banana oatmeal muffins, egg bake, and cottage cheese pasta with spinach",
+      changedFiles: [],
+      activeTools: ["bash"],
+    });
+
+    expect(selected.map((item) => item.id)).toEqual(["grocery-plus-yosoi"]);
+    expect(renderCombinationPrompt(selected)).toContain("Yosoi-first web workflows as the discovery layer");
   });
 
   it("loads YAML on session start and injects selected guidance before the agent starts", async () => {

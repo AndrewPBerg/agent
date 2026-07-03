@@ -1,0 +1,27 @@
+id: grocery-plus-yosoi
+description: Pair Grocery Agent planning with Yosoi as an optional recipe discovery layer.
+priority: 50
+enabled: true
+when:
+  prompts:
+    - grocery
+    - meal prep
+    - meal ideas
+    - recipe exploration
+    - grocery list
+    - snack ideas
+    - breakfast ideas
+  tools:
+    - bash
+guidance: |
+  When Grocery Agent needs new recipe ideas, source evidence, substitutions, or missing recipe details, use Yosoi-first web workflows as the discovery layer.
+  Keep Grocery Agent responsible for the vertical workflow: memories, goals, weekly audit logs, meal/snack planning, and final aisle-organized markdown grocery lists.
+  Preserve user-provided meal seeds as strong defaults. Prefer memory-first planning, then use Yosoi only to fill gaps, add novelty, or verify recipe/source details.
+preferredTools:
+  - grocery-agent.planning
+  - yosoi.recipe-discovery
+  - bash.yosoi
+obligations:
+  - Keep recipe discovery evidence separate from grocery memory and weekly audit output.
+  - Save or cite recipe sources when web discovery affects the grocery list.
+  - Do not couple Grocery Agent implementation directly to Yosoi-specific commands.

@@ -63,6 +63,16 @@ describe("yosoi-workflows extension", () => {
     expect(ctx.ui.setStatus).toHaveBeenCalledWith("yosoi", "yosoi 0");
   });
 
+  it("/yosoi command prompts reference installed pi skill paths", async () => {
+    const pi = setup();
+    const ctx = createMockContext();
+
+    await pi.commands.get("yosoi").handler("fetch https://example.com", ctx);
+
+    expect(ctx.ui.setEditorText).toHaveBeenCalledWith(expect.stringContaining("~/.pi/agent/skills/yosoi-web-workflows/SKILL.md"));
+    expect(ctx.ui.setEditorText).toHaveBeenCalledWith(expect.not.stringContaining(".agents/skills"));
+  });
+
   it("/yosoi command activates dashboard helpers explicitly", async () => {
     const pi = setup();
     const ctx = createMockContext();

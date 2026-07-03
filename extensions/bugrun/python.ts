@@ -659,7 +659,13 @@ export function formatPythonDebugPanel(result: PythonDebugResult): string {
   return lines.join("\n");
 }
 
-async function captureHit(dap: DapClient, _cwd: string, threadId: number, reason: string, timeoutMs: number): Promise<BreakpointHit> {
+export async function captureHit(
+  dap: DapClient,
+  _cwd: string,
+  threadId: number,
+  reason: string,
+  timeoutMs: number,
+): Promise<BreakpointHit> {
   const stackResponse = await dap.request<{ stackFrames?: DapStackFrame[] }>(
     "stackTrace",
     { threadId, startFrame: 0, levels: 12 },

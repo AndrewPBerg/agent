@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from "node:net";
+import type { Readable, Writable } from "node:stream";
 
 type DapRequest = {
   seq: number;
@@ -62,17 +63,20 @@ export class DapClient {
   private waiters: EventWaiter[] = [];
   private closed = false;
 
-  constructor(private readonly socket: Socket) {
-    socket.on("data", (chunk) => {
+  constructor(
+    private readonly output: Writable & { destroy?: () => void },
+    input: Readable & { destroy?: () => void } = output as unknown as Readable & { destroy?: () => void },
+  ) {
+    input.on("data", (chunk) => {
       try {
         this.receive(chunk);
       } catch (error) {
         this.failAll(error instanceof Error ? error : new Error(String(error)));
-        this.socket.destroy();
+        input.destroy?.();
       }
     });
-    socket.on("error", (error) => this.failAll(error));
-    socket.on("close", () => this.failAll(new Error("DAP socket closed")));
+    input.on("error", (error) => this.failAll(error));
+    input.on("close", () => this.failAll(new Error("DAP transport closed")));
   }
 
   request<T = unknown>(command: string, args: unknown = {}, timeoutMs = 30_000): Promise<DapResponse<T>> {
@@ -121,7 +125,7 @@ export class DapClient {
 
   dispose() {
     this.closed = true;
-    this.socket.destroy();
+    this.output.destroy?.();
     this.failAll(new Error("DAP client disposed"));
   }
 
@@ -188,7 +192,7 @@ export class DapClient {
 
   private send(message: Record<string, unknown>) {
     const body = JSON.stringify(message);
-    this.socket.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    this.output.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
   }
 
   private failAll(error: Error) {

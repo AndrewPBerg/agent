@@ -45,17 +45,17 @@ const workflowPrompts: Record<Workflow, (target: string) => string> = {
   help: () => `Use the project-local Yosoi web workflows.
 
 Read:
-- .agents/skills/yosoi-web-workflows/SKILL.md
-- .agents/skills/yosoi-fetch/SKILL.md when fetching page evidence
-- .agents/skills/yosoi-research-frontier/SKILL.md when creating a research packet
+- ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md
+- ~/.pi/agent/skills/yosoi-fetch/SKILL.md when fetching page evidence
+- ~/.pi/agent/skills/yosoi-research-frontier/SKILL.md when creating a research packet
 
-Summarize the right Yosoi command path for my task. Use uv-run commands only.`,
+Summarize the right Yosoi command path for my task. Use uvx or uv run commands only.`,
 
   search: (target) => `Use Yosoi search for source discovery.
 
 Target/query: ${target || "<fill query>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md.
 Start with:
 uvx yosoi search "${target || "QUERY"}" --limit 10 --json > .yosoi/search-results.json
 
@@ -65,7 +65,7 @@ Then inspect candidate URLs, fetch promising pages before making content claims,
 
 URL(s): ${target || "<fill URL>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md and .agents/skills/yosoi-fetch/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md and ~/.pi/agent/skills/yosoi-fetch/SKILL.md.
 Start with:
 uvx yosoi fetch "${target || "URL"}" --view text --chars 12000 --json
 
@@ -75,7 +75,7 @@ If JS/source fidelity matters, compare raw/rendered or save a bundle. Report sta
 
 Seed(s): ${target || "<fill seed URL>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md.
 Start conservatively:
 uvx yosoi crawl "${target || "URL"}" --limit 25 --json > .yosoi/crawl-results.json
 
@@ -85,7 +85,7 @@ Respect policy/robots settings, keep output as artifacts, and fetch/scrape repre
 
 Topic: ${target || "<fill topic>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md and .agents/skills/yosoi-research-frontier/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md and ~/.pi/agent/skills/yosoi-research-frontier/SKILL.md.
 Start with:
 uvx yosoi research init "${target || "TOPIC"}" --json
 
