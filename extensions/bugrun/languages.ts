@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, execFile as execFileCallback, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:net";
 import { relative, resolve, sep } from "node:path";
@@ -190,16 +191,31 @@ async function launchArgs(options: GenericDebugOptions, cwd: string, _port?: num
       cwd,
     };
   }
-  const [runtimeExecutable, ...runtimeArgs] = override ?? ["node", "--test", ...(options.testArgs ?? []), options.test];
   return {
     name: "bugrun ts test",
     type: "pwa-node",
     request: "launch",
     cwd,
-    runtimeExecutable,
-    runtimeArgs,
+    ...typescriptLaunchTarget(cwd, options, override),
+    autoAttachChildProcesses: true,
+    smartStep: true,
+    sourceMaps: true,
+    resolveSourceMapLocations: [`${cwd}/**`, `!${cwd}/node_modules/**`],
+    skipFiles: ["<node_internals>/**", "**/node_modules/**"],
     console: "internalConsole",
   };
+}
+
+function typescriptLaunchTarget(cwd: string, options: GenericDebugOptions, override?: string[]) {
+  if (override) {
+    const [runtimeExecutable, ...runtimeArgs] = override;
+    return { runtimeExecutable, runtimeArgs };
+  }
+
+  const vitestProgram = resolve(cwd, "node_modules", "vitest", "vitest.mjs");
+  if (existsSync(vitestProgram)) return { program: vitestProgram, args: ["run", options.test, ...(options.testArgs ?? [])] };
+
+  return { runtimeExecutable: "node", runtimeArgs: ["--test", ...(options.testArgs ?? []), options.test] };
 }
 
 type AdapterProcess = {

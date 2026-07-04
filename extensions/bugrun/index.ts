@@ -160,7 +160,7 @@ Use the \`bugrun_debug\` tool with:
 - test: ${test}
 - breakpoints: ${breakpoints.length ? breakpoints.map((item) => `\`${item}\``).join(", ") : "(inspect first and add one natural production-code breakpoint)"}${fixtureOptions}
 
-Use the focused test command as the executable stimulus, not as the whole answer. Keep the first run compact; use \`detailLevel: "full"\` only if expanded hit/locals text is truly needed in LLM context. Explain the call path, important stack frames, locals/state transitions, and what runtime evidence showed that static analysis alone would miss. Follow the selected mode above for whether to patch, test, or narrate next.`;
+Use the focused test command as the executable stimulus, not as the whole answer. For TypeScript/JavaScript projects, inspect package.json and pass the real project test runner through \`command\` when needed (for example \`pnpm exec vitest run <test-file>\`); plain \`node --test\` often will not exercise React/Vitest TSX paths. Keep the first run compact; use \`detailLevel: "full"\` only if expanded hit/locals text is truly needed in LLM context. Explain the call path, important stack frames, locals/state transitions, and what runtime evidence showed that static analysis alone would miss. Follow the selected mode above for whether to patch, test, or narrate next.`;
 }
 
 function buildExploratoryPrompt(cwd: string, request: string, intent: BugrunIntent = "explore"): string {
