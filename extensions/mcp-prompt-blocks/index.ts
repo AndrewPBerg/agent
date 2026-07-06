@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getMcpAccessDecision } from "../mcp-access-guard/rules";
 
 type JsonObject = Record<string, unknown>;
 
@@ -52,7 +53,9 @@ function mcpConfigPaths(cwd: string): string[] {
 }
 
 function hasConfiguredServer(server: string, cwd: string): boolean {
-  return mcpConfigPaths(cwd).some((path) => configuredServerNames(path).includes(server));
+  const configured = new Set(mcpConfigPaths(cwd).flatMap(configuredServerNames));
+  if (!configured.has(server)) return false;
+  return !getMcpAccessDecision(cwd, configured).blockedServers.has(server);
 }
 
 function hasMcpTool(event: Parameters<Parameters<ExtensionAPI["on"]>[1]>[0]): boolean {

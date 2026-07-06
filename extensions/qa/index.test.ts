@@ -20,6 +20,8 @@ describe("qa extension", () => {
     expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("QA YOUR worked-on diff"));
     expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("staged, unstaged, and untracked changes"));
     expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("edge cases"));
+    expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("Tech debt pass"));
+    expect(pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("debt introduced or worsened"));
   });
 
   it("includes optional focus text", () => {

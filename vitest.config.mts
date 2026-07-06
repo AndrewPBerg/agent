@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["extensions/**/*.test.ts"],
-    exclude: ["node_modules", "npm", "extensions/_archive"],
+    exclude: ["node_modules", "npm", "extensions/_archive", "extensions/vim-session"],
   },
   resolve: {
     alias: {

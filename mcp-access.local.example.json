@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "directories": {
+    "~/Desktop/Work": {
+      "block": ["linear"],
+      "note": "Block these MCP servers in this directory and descendants."
+    },
+    "~/Desktop/Personal": {
+      "allow": ["linear"],
+      "note": "Optional allowlist form: all configured servers not listed here are blocked."
+    }
+  }
+}
