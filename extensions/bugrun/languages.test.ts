@@ -1,5 +1,14 @@
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { buildGenericRunnerCommand, parseLanguage } from "./languages";
+import { buildGenericRunnerCommand, parseLanguage, runGenericDebug } from "./languages";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const localJsDebugAdapter = resolve(repoRoot, "bin/js-debug-adapter");
+const hasJsDebugAdapter =
+  existsSync(localJsDebugAdapter) || spawnSync("sh", ["-lc", "command -v js-debug-adapter"], { stdio: "ignore" }).status === 0;
 
 describe("bugrun language adapters", () => {
   it("defaults language to python for compatibility", () => {
@@ -48,5 +57,55 @@ describe("bugrun language adapters", () => {
       adapter: "js-debug-adapter",
       note: "User-supplied Bugrun command",
     });
+  });
+
+  (hasJsDebugAdapter ? it : it.skip)(
+    "captures Vitest TS breakpoints from worker debug sessions",
+    async () => {
+      const result = await runGenericDebug({
+        language: "ts",
+        cwd: repoRoot,
+        test: "extensions/bugrun/fixtures/ts-vitest/sample.test.ts",
+        breakpoints: [{ path: "extensions/bugrun/fixtures/ts-vitest/subject.ts", line: 2 }],
+        adapter: existsSync(localJsDebugAdapter) ? localJsDebugAdapter : undefined,
+        maxHits: 1,
+        timeoutMs: 30_000,
+      });
+
+      expect(result.hits).toHaveLength(1);
+      expect(result.hits[0]?.frame.path).toBe(resolve(repoRoot, "extensions/bugrun/fixtures/ts-vitest/subject.ts"));
+      expect(result.hits[0]?.frame.line).toBe(2);
+    },
+    35_000,
+  );
+
+  (hasJsDebugAdapter ? it : it.skip)("does not emit uncaught exceptions when an in-flight TS debug run is aborted", async () => {
+    const controller = new AbortController();
+    const uncaught: unknown[] = [];
+    const handler = (error: unknown) => uncaught.push(error);
+    process.on("uncaughtException", handler);
+
+    try {
+      const run = runGenericDebug(
+        {
+          language: "ts",
+          cwd: repoRoot,
+          test: "extensions/bugrun/fixtures/ts-vitest/sample.test.ts",
+          breakpoints: [{ path: "extensions/bugrun/fixtures/ts-vitest/subject.ts", line: 2 }],
+          adapter: existsSync(localJsDebugAdapter) ? localJsDebugAdapter : undefined,
+          maxHits: 1,
+          timeoutMs: 30_000,
+        },
+        controller.signal,
+      ).catch((error: unknown) => error);
+
+      setTimeout(() => controller.abort(), 25);
+      await run;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      process.off("uncaughtException", handler);
+    }
+
+    expect(uncaught).toEqual([]);
   });
 });

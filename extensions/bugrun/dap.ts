@@ -25,12 +25,16 @@ export type DapEvent<T = unknown> = {
   body?: T;
 };
 
-type DapServerRequest = {
+export type DapServerRequest = {
   seq: number;
   type: "request";
   command: string;
   arguments?: unknown;
 };
+
+type DapServerRequestResult = { success?: boolean; body?: unknown; message?: string } | undefined;
+type DapServerRequestHandler = (request: DapServerRequest) => DapServerRequestResult | Promise<DapServerRequestResult>;
+type DapEventHandler = (event: DapEvent) => void;
 
 type PendingRequest = {
   resolve: (response: DapResponse) => void;
@@ -66,6 +70,8 @@ export class DapClient {
   constructor(
     private readonly output: Writable & { destroy?: () => void },
     input: Readable & { destroy?: () => void } = output as unknown as Readable & { destroy?: () => void },
+    private requestHandler?: DapServerRequestHandler,
+    private eventHandler?: DapEventHandler,
   ) {
     input.on("data", (chunk) => {
       try {
@@ -123,6 +129,14 @@ export class DapClient {
     });
   }
 
+  setRequestHandler(handler: DapServerRequestHandler | undefined) {
+    this.requestHandler = handler;
+  }
+
+  setEventHandler(handler: DapEventHandler | undefined) {
+    this.eventHandler = handler;
+  }
+
   dispose() {
     this.closed = true;
     this.output.destroy?.();
@@ -151,6 +165,16 @@ export class DapClient {
   }
 
   private handleMessage(message: DapResponse | DapEvent | DapServerRequest) {
+    if (process.env.BUGRUN_DAP_TRACE) {
+      const label =
+        message.type === "response"
+          ? `response:${message.command}:${message.success}`
+          : message.type === "event"
+            ? `event:${message.event}`
+            : `request:${message.command}`;
+      const detail = message.type === "response" && message.command === "setBreakpoints" ? ` ${JSON.stringify(message.body)}` : "";
+      process.stderr.write(`[bugrun dap] ${label}${detail}\n`);
+    }
     if (message.type === "response") {
       const pending = this.pending.get(message.request_seq);
       if (!pending) return;
@@ -164,6 +188,7 @@ export class DapClient {
     }
 
     if (message.type === "event") {
+      this.eventHandler?.(message);
       let delivered = false;
       for (const waiter of [...this.waiters]) {
         if (!waiter.predicate(message)) continue;
@@ -178,19 +203,39 @@ export class DapClient {
     }
 
     if (message.type === "request") {
-      // debugpy may ask optional client-side questions. The MVP does not support
-      // any, so acknowledge them to keep the adapter moving.
+      void this.respondToServerRequest(message);
+    }
+  }
+
+  private async respondToServerRequest(message: DapServerRequest) {
+    try {
+      const result = await this.requestHandler?.(message);
       this.send({
         seq: this.seq++,
         type: "response",
         request_seq: message.seq,
         command: message.command,
-        success: true,
+        success: result?.success ?? true,
+        ...(result?.message ? { message: result.message } : {}),
+        ...(result?.body === undefined ? {} : { body: result.body }),
+      });
+    } catch (error) {
+      this.send({
+        seq: this.seq++,
+        type: "response",
+        request_seq: message.seq,
+        command: message.command,
+        success: false,
+        message: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
   private send(message: Record<string, unknown>) {
+    if (process.env.BUGRUN_DAP_TRACE) {
+      const label = message.type === "request" ? `request:${String(message.command)}` : `response:${String(message.command)}`;
+      process.stderr.write(`[bugrun dap] -> ${label}\n`);
+    }
     const body = JSON.stringify(message);
     this.output.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
   }

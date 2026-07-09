@@ -2,9 +2,9 @@ import { type ChildProcessWithoutNullStreams, execFile as execFileCallback, spaw
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:net";
-import { relative, resolve, sep } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { connectDap, DapClient } from "./dap";
+import { connectDap, DapClient, type DapEvent, type DapServerRequest } from "./dap";
 import { type BreakpointHit, captureHit, type PythonBreakpoint } from "./python";
 
 const execFile = promisify(execFileCallback);
@@ -40,7 +40,8 @@ export type GenericDebugResult = {
 };
 
 export function parseLanguage(value: unknown): BugrunLanguage {
-  if (value === "rust" || value === "go" || value === "ts" || value === "python" || value === undefined) return value ?? "python";
+  if (value === undefined) return "python";
+  if (value === "rust" || value === "go" || value === "ts" || value === "python") return value;
   throw new Error(`Unsupported Bugrun language: ${String(value)}`);
 }
 
@@ -91,43 +92,61 @@ export async function runGenericDebug(options: GenericDebugOptions, signal?: Abo
   const timeLeft = () => Math.max(1_000, deadline - Date.now());
   const runner = await buildGenericRunnerCommand(options);
   const adapter = await startAdapter(options, runner, signal);
-  let dap: DapClient | undefined;
+  const dapSessions = new Set<DapClient>();
+  const eventQueue: Array<{ dap: DapClient; event: DapEvent<{ reason?: string; threadId?: number; exitCode?: number }> }> = [];
+  let wakeEventWaiter: (() => void) | undefined;
+  const childSessionErrors: string[] = [];
+
+  const registerSession = (session: DapClient) => {
+    dapSessions.add(session);
+    session.setEventHandler((event) => {
+      eventQueue.push({ dap: session, event: event as DapEvent<{ reason?: string; threadId?: number; exitCode?: number }> });
+      wakeEventWaiter?.();
+      wakeEventWaiter = undefined;
+    });
+    session.setRequestHandler((request) => {
+      if (options.language === "ts" && adapter.port && request.command === "startDebugging") {
+        void startChildDebugSession(request, adapter.port, registerSession, options.language, breakpoints, timeLeft, signal).catch(
+          (error) => {
+            childSessionErrors.push(error instanceof Error ? error.message : String(error));
+          },
+        );
+        return { success: true, body: {} };
+      }
+      return { success: true };
+    });
+  };
 
   try {
-    dap = adapter.dap;
-    await dap.request("initialize", initializeArgs(options.language), timeLeft());
-    const launch = dap.request("launch", await launchArgs(options, cwd, adapter.port), timeLeft());
-    await dap.waitForEvent((event) => event.event === "initialized", timeLeft());
-    for (const [path, lines] of groupBreakpointLines(breakpoints)) {
-      await dap.request(
-        "setBreakpoints",
-        { source: { path }, breakpoints: lines.map((line) => ({ line })), lines, sourceModified: false },
-        timeLeft(),
-      );
-    }
-    await dap.request("setExceptionBreakpoints", { filters: [] }, timeLeft());
-    await dap.request("configurationDone", {}, timeLeft());
-    await launch;
+    registerSession(adapter.dap);
+    await configureDapSession(adapter.dap, options.language, "launch", await launchArgs(options, cwd, adapter.port), breakpoints, timeLeft);
 
     const hits: BreakpointHit[] = [];
     let debuggeeExitCode: number | null = null;
     let sawDebuggeeExit = false;
     while (Date.now() < deadline) {
-      const event = await Promise.race([
-        dap.waitForEvent<{ reason?: string; threadId?: number; exitCode?: number }>(
-          (candidate) => candidate.event === "stopped" || candidate.event === "terminated" || candidate.event === "exited",
-          timeLeft(),
-        ),
-        adapter.exited.then(() => undefined),
-      ]);
-      if (!event) break;
+      const next = await waitForQueuedDebugEvent(
+        eventQueue,
+        (candidate) => candidate.event === "stopped" || candidate.event === "terminated" || candidate.event === "exited",
+        timeLeft(),
+        adapter.exited,
+        () =>
+          new Promise<void>((resolveWake) => {
+            wakeEventWaiter = resolveWake;
+          }),
+      );
+      if (!next) break;
+      const { dap, event } = next;
       if (event.event === "terminated" || event.event === "exited") {
-        sawDebuggeeExit = true;
-        if (typeof event.body?.exitCode === "number") debuggeeExitCode = event.body.exitCode;
-        break;
+        if (dap === adapter.dap) {
+          sawDebuggeeExit = true;
+          if (typeof event.body?.exitCode === "number") debuggeeExitCode = event.body.exitCode;
+          break;
+        }
+        continue;
       }
       const threadId = event.body?.threadId;
-      if (typeof threadId !== "number") break;
+      if (typeof threadId !== "number") continue;
       if (hits.length < maxHits) hits.push(await captureHit(dap, cwd, threadId, event.body?.reason ?? "stopped", timeLeft()));
       await dap.request("continue", { threadId }, timeLeft());
     }
@@ -145,13 +164,93 @@ export async function runGenericDebug(options: GenericDebugOptions, signal?: Abo
       exitCode,
       signal: exitCode === null ? adapter.signal() : null,
       stdout: adapter.stdout(),
-      stderr: adapter.stderr(),
+      stderr: [adapter.stderr(), ...childSessionErrors.map((error) => `Bugrun child debug session failed: ${error}`)]
+        .filter(Boolean)
+        .join("\n"),
       durationMs: Date.now() - startedAt,
     };
   } finally {
-    dap?.dispose();
+    for (const session of dapSessions) session.dispose();
     await adapter.stop();
   }
+}
+
+async function configureDapSession(
+  dap: DapClient,
+  language: Exclude<BugrunLanguage, "python">,
+  command: string,
+  args: Record<string, unknown>,
+  breakpoints: PythonBreakpoint[],
+  timeLeft: () => number,
+): Promise<void> {
+  await dap.request("initialize", initializeArgs(language), timeLeft());
+  const launch = dap.request(command, args, timeLeft());
+  await Promise.race([
+    dap.waitForEvent((event) => event.event === "initialized", timeLeft()),
+    launch.then(
+      () => Promise.reject(new Error("DAP launch completed before the adapter sent initialized")),
+      (error) => Promise.reject(error),
+    ),
+  ]);
+  await setDapBreakpoints(dap, breakpoints, timeLeft);
+  await dap.request("setExceptionBreakpoints", { filters: [] }, timeLeft());
+  await dap.request("configurationDone", {}, timeLeft());
+  await launch;
+}
+
+async function setDapBreakpoints(dap: DapClient, breakpoints: PythonBreakpoint[], timeLeft: () => number): Promise<void> {
+  for (const [path, lines] of groupBreakpointLines(breakpoints)) {
+    await dap.request(
+      "setBreakpoints",
+      { source: { path }, breakpoints: lines.map((line) => ({ line })), lines, sourceModified: false },
+      timeLeft(),
+    );
+  }
+}
+
+async function startChildDebugSession(
+  request: DapServerRequest,
+  port: number,
+  registerSession: (session: DapClient) => void,
+  language: Exclude<BugrunLanguage, "python">,
+  breakpoints: PythonBreakpoint[],
+  timeLeft: () => number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const args = (request.arguments ?? {}) as { request?: string; configuration?: Record<string, unknown> };
+  const configuration = { ...(args.configuration ?? {}) };
+  const command = args.request ?? (typeof configuration.request === "string" ? configuration.request : "launch");
+  if (configuration.type === "node") configuration.type = "pwa-node";
+  delete configuration.options;
+  if (!Array.isArray(configuration.args)) configuration.args = [];
+  const child = await connectDap("127.0.0.1", port, Math.min(15_000, timeLeft()), signal);
+  registerSession(child);
+  await configureDapSession(child, language, command, configuration, breakpoints, timeLeft);
+}
+
+async function waitForQueuedDebugEvent<T extends DapEvent>(
+  queue: Array<{ dap: DapClient; event: T }>,
+  predicate: (event: T) => boolean,
+  timeoutMs: number,
+  adapterExited: Promise<void>,
+  waitForWake: () => Promise<void>,
+): Promise<{ dap: DapClient; event: T } | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const existingIndex = queue.findIndex((item) => predicate(item.event));
+    if (existingIndex >= 0) {
+      const [item] = queue.splice(existingIndex, 1);
+      return item;
+    }
+    const remaining = Math.max(1, deadline - Date.now());
+    const outcome = await Promise.race([
+      waitForWake().then(() => "wake" as const),
+      adapterExited.then(() => "exit" as const),
+      delay(remaining).then(() => "timeout" as const),
+    ]);
+    if (outcome !== "wake") return undefined;
+  }
+  return undefined;
 }
 
 function initializeArgs(language: Exclude<BugrunLanguage, "python">) {
@@ -237,6 +336,7 @@ async function startAdapter(options: GenericDebugOptions, runner: GenericRunnerC
       stdio: ["ignore", "pipe", "pipe"],
       signal,
     }) as ChildProcessWithoutNullStreams;
+    absorbAbortProcessError(child);
     return processAdapter(child, await connectDap("127.0.0.1", port, 15_000, signal), port);
   }
 
@@ -252,6 +352,7 @@ async function startAdapter(options: GenericDebugOptions, runner: GenericRunnerC
         stdio: ["ignore", "pipe", "pipe"],
         signal,
       }) as ChildProcessWithoutNullStreams;
+      absorbAbortProcessError(child);
       return processAdapter(child, await connectDap("127.0.0.1", port, 15_000, signal), port, { killProcessGroup: true });
     }
 
@@ -261,10 +362,12 @@ async function startAdapter(options: GenericDebugOptions, runner: GenericRunnerC
       stdio: ["pipe", "pipe", "pipe"],
       signal,
     }) as ChildProcessWithoutNullStreams;
+    absorbAbortProcessError(child);
     return processAdapter(child, new DapClient(child.stdin, child.stdout), undefined, { killProcessGroup: true });
   }
 
   const child = spawn(runner.adapter, [], { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"], signal }) as ChildProcessWithoutNullStreams;
+  absorbAbortProcessError(child);
   return processAdapter(child, new DapClient(child.stdin, child.stdout));
 }
 
@@ -288,8 +391,8 @@ async function shouldUseTcpJsDebugAdapter(adapter: string): Promise<boolean> {
   if (/(^|[/\\])dapDebugServer\.js$/.test(adapter)) return true;
   try {
     const content = await readFile(adapter, "utf8");
-    if (content.includes("MCP Client -> DAP Server") || content.includes("process.stdin.on('data'")) return false;
-    if (content.includes("dapDebugServer.js")) return true;
+    if (resolveJsDebugServerScript(adapter, content)) return true;
+    if (content.includes("process.stdin.on('data')")) return false;
     return content.includes("listening at") && content.includes("socket path") && content.includes("host=localhost");
   } catch {
     return false;
@@ -298,8 +401,22 @@ async function shouldUseTcpJsDebugAdapter(adapter: string): Promise<boolean> {
 
 async function jsDebugServerLaunch(adapter: string, port: number): Promise<{ command: string; args: string[] }> {
   const content = await readFile(adapter, "utf8").catch(() => "");
-  const needsNode = adapter.endsWith(".js") || content.startsWith('"use strict"') || content.startsWith("'use strict'");
-  return needsNode ? { command: process.execPath, args: [adapter, String(port)] } : { command: adapter, args: [String(port)] };
+  const target = resolveJsDebugServerScript(adapter, content) ?? adapter;
+  const needsNode = target.endsWith(".js") || content.startsWith('"use strict"') || content.startsWith("'use strict'");
+  const args = [String(port), "127.0.0.1"];
+  return needsNode ? { command: process.execPath, args: [target, ...args] } : { command: target, args };
+}
+
+function resolveJsDebugServerScript(adapter: string, content: string): string | undefined {
+  if (/(^|[/\\])dapDebugServer\.js$/.test(adapter)) return adapter;
+  const bloopServer = resolve(dirname(adapter), "..", "dist", "src", "dapDebugServer.js");
+  if (content.includes("dapServerScriptPath") && existsSync(bloopServer)) return bloopServer;
+  const homeScript = content.match(/\$HOME\/([^"\s]*dapDebugServer\.js)/)?.[1];
+  if (homeScript) {
+    const candidate = resolve(process.env.HOME ?? "", homeScript);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 function normalizeGoTestBinaryArgs(args: string[]) {
@@ -319,6 +436,16 @@ function resolveGoTestTarget(cwd: string, test: string, testArgs: string[]) {
   return { program: cwd, args: hasRunFilter ? testArgs : ["-test.run", trimmed, ...testArgs] };
 }
 
+function absorbAbortProcessError(child: ChildProcessWithoutNullStreams): void {
+  child.on("error", (error) => {
+    if (isAbortProcessError(error)) return;
+  });
+}
+
+function isAbortProcessError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || ("code" in error && error.code === "ABORT_ERR"));
+}
+
 function processAdapter(
   child: ChildProcessWithoutNullStreams,
   dap: DapClient,
@@ -331,13 +458,17 @@ function processAdapter(
   let exitSignal: NodeJS.Signals | null = null;
   child.stdout.on("data", (chunk) => (stdout = limitText(stdout + chunk.toString("utf8"), 100_000)));
   child.stderr.on("data", (chunk) => (stderr = limitText(stderr + chunk.toString("utf8"), 100_000)));
-  const exited = new Promise<void>((resolveExit) =>
+  const exited = new Promise<void>((resolveExit) => {
+    child.once("error", (error) => {
+      stderr = limitText(`${stderr}${stderr ? "\n" : ""}${error.message}`, 100_000);
+      resolveExit();
+    });
     child.once("exit", (code, signal) => {
       exitCode = code;
       exitSignal = signal;
       resolveExit();
-    }),
-  );
+    });
+  });
   return {
     dap,
     port,
