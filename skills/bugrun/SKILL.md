@@ -29,11 +29,12 @@ Do not stop after `supp`, `rg`, or `read` when the user explicitly asks for runt
 2. Inspect narrowly with SUPP/rg/read to find:
    - the file/symbol mentioned by the user;
    - a focused existing test or smallest test stimulus;
-   - 1–5 production-code breakpoint lines where control crosses boundaries or state changes.
+   - 1–12 production-code breakpoint lines where control crosses boundaries or state changes.
 3. Run Bugrun:
    - Prefer `bugrun_debug` for one-shot evidence.
    - Prefer `bugrun_start` when you need interactive stepping between stops.
-4. Answer from runtime evidence:
+4. At each stop, validate the current mental model; revise it before continuing if the new evidence changes it.
+5. Answer from runtime evidence:
    - call path and important stack frames;
    - relevant locals/state transitions;
    - what static inspection alone would have missed;

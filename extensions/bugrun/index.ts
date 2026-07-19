@@ -182,9 +182,10 @@ Workflow:
 1. Inspect the repo to locate the mentioned file/symbols and nearby tests.
 2. If no focused test target already exercises the path, create the smallest test stimulus needed to drive it.
 3. Choose natural production-code breakpoints at the relevant boundaries, then call \`bugrun_debug\` with explicit \`path:line\` breakpoints. Use \`bugrun_start\` only for Python/debugpy interactive sessions.
-4. Keep the first run compact; use expanded/full detail only if stack/locals text is truly needed in LLM context.
-5. Use runtime evidence to answer in the selected mode: solve, explore, harden, or lab.
-6. Do not add temporary print/log instrumentation unless Bugrun cannot answer the question.`;
+4. At each hit, validate the current mental model; revise it before continuing when new evidence changes it.
+5. Keep the first run compact; use expanded/full detail only if stack/locals text is truly needed in LLM context.
+6. Use runtime evidence to answer in the selected mode: solve, explore, harden, or lab.
+7. Do not add temporary print/log instrumentation unless Bugrun cannot answer the question.`;
 }
 
 function inferLanguageFromTarget(target?: string): BugrunLanguage {
@@ -491,10 +492,12 @@ export default function bugrun(pi: ExtensionAPI) {
     label: "Bugrun Start",
     description:
       "Start a multi-shot Python pytest/debugpy session. Stops at first breakpoint; continue/expand with follow-up Bugrun tools.",
-    promptSnippet: "Start an interactive Bugrun session with up to five production-code breakpoints, then inspect stops before continuing.",
+    promptSnippet:
+      "Start an interactive Bugrun session with up to 12 production-code breakpoints. At each stop, validate the mental model and revise it if new evidence changes it.",
     promptGuidelines: [
-      "Prefer bugrun_start for exploratory runtime flow debugging where the next breakpoint/inspection depends on previous state.",
-      `Use at most ${MAX_INTERACTIVE_BREAKPOINTS} breakpoints; choose boundaries where state changes or control crosses components.`,
+      "Prefer bugrun_start when the next breakpoint depends on what the previous stop revealed.",
+      `Use at most ${MAX_INTERACTIVE_BREAKPOINTS} boundary or state-transition breakpoints.`,
+      "At each stop, validate the mental model; revise it before continuing if evidence changes it.",
       "Use bugrun_continue to advance and bugrun_expand only when compact stop summaries are insufficient.",
     ],
     parameters: Type.Object({
@@ -815,7 +818,7 @@ export default function bugrun(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => ({
     systemPrompt:
       event.systemPrompt +
-      "\n\nBugrun policy: Bugrun is an automatic runtime-flow toolbelt option, not only a slash command. When the user asks to understand Python, Rust, Go, or TypeScript code flow, execution paths, call stacks, state transitions, or how one file/module connects to another, pick the intent first: solve (bug fix), explore (mental model), harden (abstraction QA), or lab (playful proof). Use static inspection only to choose the narrowest focused test/stimulus and natural breakpoints, then prefer runtime DAP evidence via bugrun_debug (or bugrun_start only for Python/debugpy interactive sessions) before answering from static analysis alone. If no runnable stimulus or adapter is available, say that explicitly and provide the best static map.",
+      "\n\nBugrun policy: For Python, Rust, Go, or TypeScript runtime-flow questions, choose solve, explore, harden, or lab; use static inspection only to select a focused stimulus and natural breakpoints, then prefer DAP evidence. In interactive Python sessions, use up to 12 breakpoints; at each stop, validate the current mental model and revise it before continuing if the evidence changes it. If no runnable stimulus or adapter exists, say so and give the best static map.",
   }));
 
   pi.on("session_shutdown", async (_event, ctx) => {

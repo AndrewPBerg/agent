@@ -10,7 +10,7 @@ const MAX_LOCAL_VARIABLES = 12;
 const MAX_VARIABLE_VALUE_CHARS = 500;
 const MAX_SUMMARY_VARIABLES = 4;
 const MAX_SUMMARY_VALUE_CHARS = 180;
-export const MAX_INTERACTIVE_BREAKPOINTS = 5;
+export const MAX_INTERACTIVE_BREAKPOINTS = 12;
 
 const NOISY_LOCAL_NAMES = new Set(["self", "ctx", "state", "deps", "compiled", "graph", "function variables"]);
 const IMPORTANT_LOCAL_NAMES = new Set([
