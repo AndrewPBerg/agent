@@ -223,10 +223,10 @@ describe("bugrun extension", () => {
     const result = hook!({ systemPrompt: "base" });
 
     expect(result.systemPrompt).toContain("base");
-    expect(result.systemPrompt).toContain("automatic runtime-flow toolbelt option");
-    expect(result.systemPrompt).toContain("runtime DAP evidence");
-    expect(result.systemPrompt).toContain("Rust, Go, or TypeScript");
-    expect(result.systemPrompt).toContain("how one file/module connects to another");
-    expect(result.systemPrompt).toContain("solve (bug fix), explore (mental model), harden (abstraction QA), or lab");
+    expect(result.systemPrompt).toContain("runtime-flow questions");
+    expect(result.systemPrompt).toContain("DAP evidence");
+    expect(result.systemPrompt).toContain("Python, Rust, Go, or TypeScript");
+    expect(result.systemPrompt).toContain("up to 12 breakpoints");
+    expect(result.systemPrompt).toContain("validate the current mental model");
   });
 });

@@ -25,7 +25,7 @@ Current support:
 
 MVP constraints:
 
-- Multi-shot flow is Python-backed today: `bugrun_start` starts pytest/debugpy with up to 5 explicit breakpoints, `bugrun_continue` advances to the next stop, `bugrun_expand` prepares a TUI-only expanded trace view.
+- Multi-shot flow is Python-backed today: `bugrun_start` accepts up to 12 explicit breakpoints. At each stop, validate the mental model and revise it before continuing when the new evidence changes it.
 - `bugrun_debug` is language-aware and returns runtime evidence for Python, Rust, Go, and TypeScript when the matching local DAP adapter is installed.
 - Explicit breakpoints are required.
 - No expression evaluation; locals/stack only.

@@ -80,16 +80,16 @@ describe("bugrun python helpers", () => {
     expect(panel.length).toBeLessThan(1_000);
   });
 
-  it("rejects interactive sessions with more than five breakpoints before spawning debugpy", async () => {
+  it("rejects interactive sessions with more than twelve breakpoints before spawning debugpy", async () => {
     await expect(
       PythonDebugSession.start("too-many", {
         cwd: fixture,
         test: "tests/test_cart.py::test_discount_total",
-        breakpoints: Array.from({ length: 6 }, () => parseBreakpointSpec("src/shop/cart.py:9", fixture)),
+        breakpoints: Array.from({ length: 13 }, () => parseBreakpointSpec("src/shop/cart.py:9", fixture)),
         runner: "direct",
         python: "__should_not_spawn__",
       }),
-    ).rejects.toThrow("at most 5 breakpoints");
+    ).rejects.toThrow("at most 12 breakpoints");
   });
 
   it("reports debug process startup failures instead of waiting for DAP forever", async () => {
