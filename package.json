@@ -26,6 +26,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "marked": "18.0.5",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   }
