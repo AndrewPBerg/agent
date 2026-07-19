@@ -1,6 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
+    "extensions/*.ts",
     "extensions/*/index.ts",
     "extensions/test/**/*.test.ts",
     "extensions/*/**/*.test.ts"

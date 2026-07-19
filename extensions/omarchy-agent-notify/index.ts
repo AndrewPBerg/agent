@@ -3,6 +3,7 @@ import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Vol_percent } from "../../constants.ts";
 
 const APP_NAME = "Pi";
 const ICON = "utilities-terminal";
@@ -13,6 +14,9 @@ const PI_AGENT_DIR = `${process.env.HOME ?? homedir()}/.pi/agent`;
 const DONE_SOUND_DIR = `${PI_AGENT_DIR}/notification-mp3s`;
 const FOCUS_WINDOW_FILE = `${PI_AGENT_DIR}/last-notify-window`;
 const SOUND_SUPPRESSING_MAKO_MODES = new Set(["do-not-disturb", "voxtype-muted"]);
+const NORMALIZE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11";
+const NOTIFICATION_VOLUME_PERCENT = Math.max(0, Math.min(100, Vol_percent));
+const NOTIFICATION_VOLUME = NOTIFICATION_VOLUME_PERCENT / 100;
 
 type NotifyUrgency = "low" | "normal" | "critical";
 type UnknownRecord = Record<string, unknown>;
@@ -259,9 +263,9 @@ function playDoneSound(urgency: NotifyUrgency): void {
         "sink=$(pactl get-default-sink 2>/dev/null || true)",
         'if [ -n "$sink" ]; then pactl suspend-sink "$sink" false >/dev/null 2>&1 || true; fi',
         "if command -v ffmpeg >/dev/null 2>&1 && command -v pw-play >/dev/null 2>&1; then",
-        '  ffmpeg -v error -i "$1" -af volume=8dB -f wav - 2>/dev/null | pw-play --target "${sink:-@DEFAULT_AUDIO_SINK@}" --media-role Notification --volume 1.0 - && exit 0',
+        `  ffmpeg -v error -i "$1" -af ${NORMALIZE_FILTER} -f wav - 2>/dev/null | pw-play --target "\${sink:-@DEFAULT_AUDIO_SINK@}" --media-role Notification --volume ${NOTIFICATION_VOLUME} - && exit 0`,
         "fi",
-        'if command -v mpv >/dev/null 2>&1 && timeout 8s mpv --no-config --no-video --really-quiet --ao=pipewire,pulse --audio-client-name="Pi agent notification" --volume=135 "$1"; then exit 0; fi',
+        `if command -v mpv >/dev/null 2>&1 && timeout 8s mpv --no-config --no-video --really-quiet --ao=pipewire,pulse --audio-client-name="Pi agent notification" '--af=lavfi=[${NORMALIZE_FILTER}]' --volume=${NOTIFICATION_VOLUME_PERCENT} "$1"; then exit 0; fi`,
         'exec canberra-gtk-play --id "$2" --description "Pi agent finished"',
       ].join("\n"),
       [doneSound, eventId],

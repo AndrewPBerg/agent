@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+
+resolve_real_pi() {
+  local wrapper real candidate
+  wrapper="$(readlink -f "${BASH_SOURCE[1]}")"
+
+  if [[ -n "${PI_REAL_BIN:-}" ]]; then
+    real="$(readlink -f "$PI_REAL_BIN")"
+    if [[ -x "$real" && "$real" != "$wrapper" ]]; then
+      printf '%s\n' "$real"
+      return 0
+    fi
+    printf 'PI_REAL_BIN does not name an executable distinct from the wrapper: %s\n' "$PI_REAL_BIN" >&2
+    return 1
+  fi
+
+  candidate="${PI_ORIGINAL_BIN:-${HOME:-}/.local/bin/pi-origin}"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    real="$(readlink -f "$candidate")"
+    if [[ "$real" != "$wrapper" ]]; then
+      printf '%s\n' "$real"
+      return 0
+    fi
+  fi
+
+  if command -v mise >/dev/null 2>&1; then
+    real="$(mise which pi 2>/dev/null || true)"
+    if [[ -n "$real" ]]; then
+      real="$(readlink -f "$real")"
+      if [[ -x "$real" && "$real" != "$wrapper" ]]; then
+        printf '%s\n' "$real"
+        return 0
+      fi
+    fi
+  fi
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    real="$(readlink -f "$candidate")"
+    if [[ -x "$real" && "$real" != "$wrapper" ]]; then
+      printf '%s\n' "$real"
+      return 0
+    fi
+  done < <(type -a -p pi 2>/dev/null || true)
+
+  printf 'Unable to locate the underlying Pi executable. Set PI_REAL_BIN explicitly.\n' >&2
+  return 1
+}

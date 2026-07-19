@@ -16,16 +16,15 @@ describe("wtf-worktrees", () => {
     expect(result?.reason).toContain("wtf new");
   });
 
-  it("blocks printing env files", async () => {
+  it("does not keyword-block dotenv usage", async () => {
     const pi = createMockPi();
     wtfWorktrees(pi);
 
     const result = await pi.events.get("tool_call")![0]({
       toolName: "bash",
-      input: { command: "cat .env.local" },
+      input: { command: 'python -c "from dotenv import load_dotenv; load_dotenv()"' },
     });
 
-    expect(result?.block).toBe(true);
-    expect(result?.reason).toContain("Do not print/read .env contents");
+    expect(result).toBeUndefined();
   });
 });

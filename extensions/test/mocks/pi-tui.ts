@@ -31,10 +31,6 @@ export function hyperlink(text: string) {
   return text;
 }
 
-export function isImageLine() {
-  return false;
-}
-
 export function wrapTextWithAnsi(value: string, width: number) {
   if (width <= 0 || value.length <= width) return [value];
   const lines: string[] = [];

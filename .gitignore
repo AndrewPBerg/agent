@@ -21,6 +21,7 @@ runs/
 sessions/
 goals/
 notification-mp3s/
+sandbox-cache/
 
 # Local environment files
 .env

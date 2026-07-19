@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd)"
+# shellcheck source=pi-launch-lib
+source "$script_dir/pi-launch-lib"
+real_pi="$(resolve_real_pi)"
+exec "$real_pi" "$@"

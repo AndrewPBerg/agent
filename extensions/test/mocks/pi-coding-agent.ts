@@ -17,6 +17,38 @@ export function createLocalBashOperations() {
   };
 }
 
+export function createBashTool(_cwd: string, options: any = {}) {
+  return {
+    name: "bash",
+    label: "bash",
+    description: "Run a shell command",
+    parameters: {},
+    execute: vi.fn(async (_id, params, signal, _onUpdate) => {
+      if (options.operations) {
+        const chunks: Buffer[] = [];
+        const result = await options.operations.exec(params.command, _cwd, {
+          onData: (data: Buffer) => chunks.push(data),
+          signal,
+          timeout: params.timeout,
+          env: process.env,
+        });
+        return { content: [{ type: "text", text: Buffer.concat(chunks).toString() }], details: result };
+      }
+      return { content: [{ type: "text", text: "local" }], details: {} };
+    }),
+  };
+}
+
+export function createGrepTool(_cwd: string) {
+  return {
+    name: "grep",
+    label: "grep",
+    description: "Search file contents",
+    parameters: {},
+    execute: vi.fn(async () => ({ content: [{ type: "text", text: "local grep" }], details: undefined })),
+  };
+}
+
 export class SessionManager {
   static async list() {
     return [];

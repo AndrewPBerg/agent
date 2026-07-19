@@ -1,5 +1,12 @@
-import { type Component, getCapabilities, hyperlink, isImageLine, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Component, getCapabilities, hyperlink, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Marked, type Token, Tokenizer, type Tokens } from "marked";
+
+// pi-tui uses these control-sequence prefixes to distinguish rendered image
+// rows from text. The helper is intentionally internal to pi-tui as of 0.80.10,
+// so keep the small predicate local instead of importing a private module path.
+function isImageLine(line: string): boolean {
+  return line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
+}
 
 function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
   const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));

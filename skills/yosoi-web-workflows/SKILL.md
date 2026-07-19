@@ -7,32 +7,35 @@ description: Use when an agent needs to use Yosoi for crawl, search, fetch, or r
 
 Use this skill to choose the right Yosoi primitive before touching scraper/discovery code.
 
-In Pi, the project-local extension adds `/yosoi` helpers:
+In Pi, the project-local extension adds `/yosoi` helpers plus `/ys` as a short alias:
 
 ```text
-/yosoi search QUERY          # prefill search workflow
-/yosoi fetch URL             # prefill fetch workflow
-/yosoi crawl URL             # prefill crawl workflow
-/yosoi research TOPIC        # prefill research packet workflow
-/yosoi dashboard             # show live Yosoi command/status dashboard
-/yosoi hide                  # hide dashboard
-/yosoi clear                 # clear dashboard history
+/ys search QUERY       # prefill search workflow
+/ys fetch URL          # prefill fetch workflow
+/ys crawl URL          # prefill crawl workflow
+/ys research TOPIC     # prefill research packet workflow
+/ys show               # toggle live Yosoi command/status dashboard
+/ys older              # scroll dashboard to older runs
+/ys newer              # scroll dashboard toward latest runs
+/ys latest             # reset dashboard to latest six
+/ys clear              # clear dashboard history
 ```
 
-The dashboard observes bash tool calls that run `yosoi`, tracks commands, URLs, HTTP status codes/errors from stdout or small redirected JSON artifacts, redirected output paths, and latest Pi context-token usage.
+The dashboard observes bash tool calls that run `yosoi`, tracks commands, URLs, HTTP status codes/errors from stdout or small redirected JSON artifacts, redirected output paths, and latest Pi context-token usage. It shows six rows at a time and uses terminal hyperlinks for fetched URLs and JSON/file artifacts, so supported terminals can hover/click to open them.
 
 Global install targets:
 
 ```bash
-uvx yosoi agents install --target pi        # Pi skills + Pi extension
-uvx yosoi agents install --target agents    # generic ~/.agents/skills
-uvx yosoi agents install --target claude
-uvx yosoi agents install --target codex
-uvx yosoi agents install --target opencode
-uvx yosoi agents install --target all
+uvx yosoi agents install --scope project --target pi --force  # test in this repo/cwd
+uvx yosoi agents update --target pi                            # overwrite global Pi install
+uvx yosoi agents update --target agents                        # overwrite generic ~/.agents/skills
+uvx yosoi agents update --target claude
+uvx yosoi agents update --target codex
+uvx yosoi agents update --target opencode
+uvx yosoi agents update --target all
 ```
 
-If Pi reports skill collisions between project `.agents/skills/...` and global `~/.pi/agent/skills/...`, that is expected: project-local skills win and the global duplicates are skipped for that session.
+Use `install` for first install or skip-existing behavior. Use `update` to force-overwrite installed skills/extensions with the latest packaged Yosoi assets. If Pi reports skill collisions between project `.agents/skills/...` and global `~/.pi/agent/skills/...`, that is expected: project-local skills win and the global duplicates are skipped for that session.
 
 ## First Decision
 
@@ -62,7 +65,11 @@ Use when the target is unclear or you need candidate sources.
 
 ```bash
 uvx yosoi search "QUERY" --limit 10 --json > .yosoi/search-query.json
+# Batch independent queries in order, with bounded concurrency (default: 5).
+uvx yosoi search --file queries.txt --concurrency 5 --json > .yosoi/search-batch.json
 ```
+
+`queries.txt` contains one query per line. Alternatively, repeat `--query QUERY`. A batch result keeps each query's result or failure in input order; backend fallbacks for a single query remain sequential.
 
 Then:
 
