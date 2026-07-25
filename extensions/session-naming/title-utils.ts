@@ -2,8 +2,10 @@ const TRIVIAL_INPUT_RE =
   /^\s*(hi+|hello+|hey+|yo+|sup|moin|servus|hallo|hola|test+|ok(ay)?|lol|lmao|huh|what|sure|thx|ty|ping|gm|gn|thanks|thank\s*you|\?+|\.+)\s*[!?.]*\s*$/i;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape bytes are the intended input.
 const ANSI_ESCAPE_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ASCII controls is the intended behavior.
-const CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping terminal controls is the intended behavior.
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+const BIDI_CONTROL_RE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const UNICODE_LINE_SEPARATOR_RE = /[\u2028\u2029]/g;
 const TUI_BORDER_RE = /[\u2500-\u257f\u2580-\u259f]/;
 const TAG_RE = /^[a-z][a-z0-9-]*$/;
 const SCOPE_RE = /^[a-z0-9]+$/;
@@ -127,6 +129,8 @@ function cleanLine(line: string): string {
   return line
     .replace(ANSI_ESCAPE_RE, "")
     .replace(CONTROL_CHARS_RE, "")
+    .replace(BIDI_CONTROL_RE, "")
+    .replace(UNICODE_LINE_SEPARATOR_RE, " ")
     .trim()
     .replace(/^[\s>*_~`"'\u201C\u2018-]+/, "")
     .replace(/[`"'\u201D\u2019\s*_~]+$/, "")

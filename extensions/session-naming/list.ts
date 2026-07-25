@@ -318,7 +318,7 @@ class SessionsSelector {
   invalidate(): void {}
 }
 
-async function showSessionsSelector(ctx: any, browser: SessionBrowserConfig): Promise<SessionSelectorResult> {
+async function showSessionsSelector(ctx: any, browser: SessionBrowserConfig): Promise<SessionSelectorResult | undefined> {
   const sessions = await getSessions(ctx.cwd, { enabled: true, json: false });
   return ctx.ui.custom(
     (tui: any, theme: any, _kb: unknown, done: (result: SessionSelectorResult) => void) => {
@@ -401,7 +401,7 @@ export async function registerSessionList(pi: ExtensionAPI): Promise<void> {
         await ctx.waitForIdle();
         while (true) {
           const result = await showSessionsSelector(ctx, browser);
-          if (result.action === "cancel") return;
+          if (!result || result.action === "cancel") return;
           if (result.action === "switch") {
             await ctx.switchSession(result.session.path);
             return;
