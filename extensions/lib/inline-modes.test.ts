@@ -1,40 +1,27 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { getInlineModes, inlineModeAnimationInterval, setInlineMode, subscribeInlineModes } from "./inline-modes";
-
-const ids = ["test-low", "test-high"];
-
-afterEach(() => {
-  for (const id of ids) setInlineMode(id, undefined);
-});
+import { describe, expect, it, vi } from "vitest";
+import { createMockPi } from "../test/mocks/pi-coding-agent";
+import { INLINE_MODE_EVENT, type InlineModeState, inlineModeAnimationInterval, publishInlineMode, sortedInlineModes } from "./inline-modes";
 
 describe("inline modes", () => {
-  it("publishes multiple prioritized extension modes", () => {
-    setInlineMode("test-low", { label: "LOW", priority: 1 });
-    setInlineMode("test-high", { label: "HIGH", priority: 10 });
+  it("publishes updates over Pi's inter-extension event bus", () => {
+    const pi = createMockPi();
+    const listener = vi.fn();
+    pi.events.on(INLINE_MODE_EVENT, listener);
 
-    expect(getInlineModes().map(({ id }) => id)).toEqual(["test-high", "test-low"]);
+    publishInlineMode(pi as any, "test", { label: "TEST" });
+
+    expect(listener).toHaveBeenCalledWith({ id: "test", state: { label: "TEST" } });
   });
 
-  it("notifies the footer and exposes the fastest animation interval", () => {
-    const listener = vi.fn();
-    const unsubscribe = subscribeInlineModes(listener);
+  it("sorts modes and exposes the fastest animation interval", () => {
+    const states = new Map<string, InlineModeState>([
+      ["test-low", { label: "LOW", priority: 1, frames: [{ icon: "a" }, { icon: "b" }], intervalMs: 200 }],
+      ["test-high", { label: "HIGH", priority: 10, frames: [{ icon: "a" }, { icon: "b" }], intervalMs: 100 }],
+    ]);
 
-    setInlineMode("test-low", {
-      label: "LOW",
-      frames: [{ icon: "a" }, { icon: "b" }],
-      intervalMs: 200,
-    });
-    setInlineMode("test-high", {
-      label: "HIGH",
-      frames: [{ icon: "a" }, { icon: "b" }],
-      intervalMs: 100,
-    });
+    const modes = sortedInlineModes(states);
 
-    expect(listener).toHaveBeenCalledTimes(2);
-    expect(inlineModeAnimationInterval()).toBe(100);
-
-    unsubscribe();
-    setInlineMode("test-high", undefined);
-    expect(listener).toHaveBeenCalledTimes(2);
+    expect(modes.map(({ id }) => id)).toEqual(["test-high", "test-low"]);
+    expect(inlineModeAnimationInterval(modes)).toBe(100);
   });
 });

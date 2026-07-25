@@ -653,7 +653,7 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
 
   const unsubscribeLeader = pi.events.on(VIM_LEADER_EVENT, (data) => {
     const invocation = data as VimLeaderInvocation;
-    if (invocation?.sequence !== "m" || !sessionCtx) return;
+    if (invocation?.action !== "mailbox" || !sessionCtx) return;
     void showInspector(sessionCtx).catch((error) =>
       sessionCtx?.ui.notify(`Could not open mailbox monitor: ${error instanceof Error ? error.message : String(error)}`, "error"),
     );

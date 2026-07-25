@@ -1,6 +1,13 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { getInlineModes, type InlineModeState, inlineModeAnimationInterval, subscribeInlineModes } from "../lib/inline-modes";
+import {
+  type ActiveInlineMode,
+  INLINE_MODE_EVENT,
+  type InlineModeState,
+  type InlineModeUpdate,
+  inlineModeAnimationInterval,
+  sortedInlineModes,
+} from "../lib/inline-modes";
 import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "../vim-leader/protocol";
 
 const MODAL_CHROME_ROWS = 5;
@@ -31,6 +38,8 @@ export default function inlineDetails(pi: ExtensionAPI) {
   let detailsOpen = false;
   let sessionCtx: ExtensionContext | undefined;
   let disposeFooterResources: (() => void) | undefined;
+  let refreshInlineModes: (() => void) | undefined;
+  const inlineModeStates = new Map<string, InlineModeState>();
 
   const openDetails = async (ctx: ExtensionContext) => {
     if (detailsOpen || ctx.mode !== "tui") return;
@@ -64,8 +73,15 @@ export default function inlineDetails(pi: ExtensionAPI) {
 
   const unsubscribeLeader = pi.events.on(VIM_LEADER_EVENT, (data) => {
     const invocation = data as VimLeaderInvocation;
-    if (invocation?.sequence !== "d" || !sessionCtx) return;
+    if (invocation?.action !== "details" || !sessionCtx) return;
     void openDetails(sessionCtx).catch((error) => sessionCtx?.ui.notify(`Could not open details: ${errorMessage(error)}`, "error"));
+  });
+  const unsubscribeInlineModes = pi.events.on(INLINE_MODE_EVENT, (data) => {
+    const update = data as InlineModeUpdate;
+    if (!update?.id) return;
+    if (update.state) inlineModeStates.set(update.id, update.state);
+    else inlineModeStates.delete(update.id);
+    refreshInlineModes?.();
   });
 
   pi.on("session_start", (_event, ctx) => {
@@ -73,12 +89,13 @@ export default function inlineDetails(pi: ExtensionAPI) {
     if (ctx.mode !== "tui") return;
 
     ctx.ui.setFooter((tui, theme, data) => {
+      disposeFooterResources?.();
       footerData = data;
       let animationTimer: ReturnType<typeof setInterval> | undefined;
       let animationInterval: number | undefined;
 
       const syncAnimation = () => {
-        const nextInterval = inlineModeAnimationInterval();
+        const nextInterval = inlineModeAnimationInterval(sortedInlineModes(inlineModeStates));
         if (nextInterval === animationInterval) return;
         if (animationTimer) clearInterval(animationTimer);
         animationTimer = undefined;
@@ -90,21 +107,21 @@ export default function inlineDetails(pi: ExtensionAPI) {
       };
 
       const unsubscribeBranch = data.onBranchChange(() => tui.requestRender());
-      const unsubscribeModes = subscribeInlineModes(() => {
+      const refresh = () => {
         syncAnimation();
         tui.requestRender();
-      });
+      };
+      refreshInlineModes = refresh;
       let disposed = false;
       const dispose = () => {
         if (disposed) return;
         disposed = true;
         unsubscribeBranch();
-        unsubscribeModes();
         if (animationTimer) clearInterval(animationTimer);
         if (footerData === data) footerData = undefined;
+        if (refreshInlineModes === refresh) refreshInlineModes = undefined;
         if (disposeFooterResources === dispose) disposeFooterResources = undefined;
       };
-      disposeFooterResources?.();
       disposeFooterResources = dispose;
       syncAnimation();
 
@@ -112,7 +129,7 @@ export default function inlineDetails(pi: ExtensionAPI) {
         dispose,
         invalidate() {},
         render(width: number) {
-          return [renderInlineFooter(pi, ctx, theme, width)];
+          return [renderInlineFooter(pi, ctx, theme, width, sortedInlineModes(inlineModeStates))];
         },
       };
     });
@@ -120,6 +137,7 @@ export default function inlineDetails(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     unsubscribeLeader();
+    unsubscribeInlineModes();
     disposeFooterResources?.();
     disposeFooterResources = undefined;
     sessionCtx = undefined;
@@ -128,7 +146,13 @@ export default function inlineDetails(pi: ExtensionAPI) {
   });
 }
 
-export function renderInlineFooter(pi: ExtensionAPI, ctx: ExtensionContext, theme: Theme, width: number): string {
+export function renderInlineFooter(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  theme: Theme,
+  width: number,
+  modes: readonly ActiveInlineMode[] = [],
+): string {
   if (width <= 0) return "";
 
   const directory = formatDirectory(ctx.cwd);
@@ -137,12 +161,16 @@ export function renderInlineFooter(pi: ExtensionAPI, ctx: ExtensionContext, them
   const reasoning = !ctx.model ? "n/a" : ctx.model.reasoning === false ? "off" : pi.getThinkingLevel();
   const context = formatContext(ctx);
 
-  const inlineModes = renderInlineModes(theme);
-  const location = theme.fg("dim", `${directory} · ${name}`);
-  const left = inlineModes ? `${inlineModes} ${location}` : location;
-  const right = [theme.fg("text", model), theme.fg(reasoningColor(reasoning), reasoning), colorContext(context, ctx, theme)].join(
-    theme.fg("dim", " · "),
-  );
+  const inlineModes = renderInlineModes(modes, theme);
+  const left = theme.fg("dim", `${directory} · ${name}`);
+  const right = [
+    theme.fg("text", model),
+    theme.fg(reasoningColor(reasoning), reasoning),
+    inlineModes || undefined,
+    colorContext(context, ctx, theme),
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(theme.fg("dim", " · "));
 
   const rightWidth = visibleWidth(right);
   if (rightWidth >= width) return truncateToWidth(right, width, "…");
@@ -153,10 +181,8 @@ export function renderInlineFooter(pi: ExtensionAPI, ctx: ExtensionContext, them
   return truncateToWidth(`${fittedLeft}${padding}${right}`, width, "…");
 }
 
-function renderInlineModes(theme: Theme, now = Date.now()): string {
-  return getInlineModes()
-    .map(({ state }) => renderInlineMode(state, theme, now))
-    .join(" ");
+function renderInlineModes(modes: readonly ActiveInlineMode[], theme: Theme, now = Date.now()): string {
+  return modes.map(({ state }) => renderInlineMode(state, theme, now)).join(" ");
 }
 
 function renderInlineMode(state: InlineModeState, theme: Theme, now: number): string {
@@ -165,7 +191,7 @@ function renderInlineMode(state: InlineModeState, theme: Theme, now: number): st
   const icon = frame?.icon ?? state.icon;
   const tone = frame?.tone ?? state.tone ?? "accent";
   const content = [icon, state.label, state.detail].filter(Boolean).join(" ");
-  return theme.bg("selectedBg", theme.fg(tone, theme.bold(` ${content} `)));
+  return theme.fg(tone, theme.bold(content));
 }
 
 class DetailsModal {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setInlineMode } from "../lib/inline-modes";
+import { INLINE_MODE_EVENT } from "../lib/inline-modes";
 import { createMockPi } from "../test/mocks/pi-coding-agent";
 import vimLeader from "../vim-leader";
 import inlineDetails, { renderInlineFooter } from "./index";
@@ -45,7 +45,6 @@ function footerData() {
 }
 
 afterEach(() => {
-  setInlineMode("test", undefined);
   vi.useRealTimers();
 });
 
@@ -62,14 +61,26 @@ describe("inline details", () => {
     expect(line).not.toContain("$");
   });
 
-  it("renders shared extension modes as compact footer pills", () => {
+  it("renders inter-extension mode events as compact footer pills", async () => {
     const pi = createMockPi() as any;
     pi.getThinkingLevel = vi.fn(() => "high");
-    setInlineMode("test", { icon: "󰖟", label: "YS", detail: "FETCH", tone: "accent" });
+    let footer: { render(width: number): string[] } | undefined;
+    const ctx = context({
+      ui: {
+        setFooter: vi.fn((factory) => {
+          footer = factory({ requestRender: vi.fn() }, theme, footerData());
+          return footer;
+        }),
+      },
+    });
+    inlineDetails(pi);
+    await pi.events.get("session_start")?.[0]?.({}, ctx);
 
-    const line = renderInlineFooter(pi, context(), theme as any, 120);
+    pi.events.emit(INLINE_MODE_EVENT, { id: "test", state: { icon: "", label: "YS", detail: "FETCH", tone: "accent" } });
+    const line = footer!.render(120)[0];
 
-    expect(line).toContain("[ 󰖟 YS FETCH ]");
+    expect(line).toContain("gpt-5.6-sol · high ·  YS FETCH · ctx 24k/400k");
+    expect(line).not.toContain("[  YS FETCH ]");
     expect(line).toContain("~/projects/pi · inline-details");
   });
 

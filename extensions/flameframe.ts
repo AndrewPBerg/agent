@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Image, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "./vim-leader/protocol";
 
 const PROCESS_TOOL_NAME = "flameframe_process";
 const CUSTOM_ENTRY_TYPE = "flameframe-pack";
@@ -52,6 +53,26 @@ type BrowserAction = { type: "close" } | { type: "image"; frame: Frame } | { typ
 
 export default function (pi: ExtensionAPI) {
   let sessionPacks: SessionPack[] = [];
+  let sessionCtx: ExtensionContext | undefined;
+  let browserOpen = false;
+
+  const openBrowser = async (ctx: ExtensionContext) => {
+    if (browserOpen) return;
+    browserOpen = true;
+    try {
+      await browseSessionPacks(sessionPacks, ctx);
+    } finally {
+      browserOpen = false;
+    }
+  };
+
+  const unsubscribeLeader = pi.events.on(VIM_LEADER_EVENT, (data) => {
+    const invocation = data as VimLeaderInvocation;
+    if (invocation?.action !== "flameframe" || !sessionCtx) return;
+    void openBrowser(sessionCtx).catch((error) =>
+      sessionCtx?.ui.notify(`Could not open FlameFrame browser: ${errorMessage(error)}`, "error"),
+    );
+  });
 
   const updateShelf = (ctx: ExtensionContext) => {
     if (ctx.mode !== "tui") return;
@@ -88,8 +109,15 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    sessionCtx = ctx;
     sessionPacks = packsFromSession(ctx);
     updateShelf(ctx);
+  });
+
+  pi.on("session_shutdown", () => {
+    unsubscribeLeader();
+    sessionCtx = undefined;
+    browserOpen = false;
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -107,7 +135,7 @@ export default function (pi: ExtensionAPI) {
     description: "Browse FlameFrame evidence packs registered in this session, or add one explicitly.",
     handler: async (args, ctx) => {
       if (args.trim()) rememberPack(await loadPack(args.trim(), ctx.cwd), ctx);
-      await browseSessionPacks(sessionPacks, ctx);
+      await openBrowser(ctx);
     },
   });
 }

@@ -1,16 +1,27 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { getInlineModes, setInlineMode } from "../lib/inline-modes";
+import { describe, expect, it, vi } from "vitest";
+import { INLINE_MODE_EVENT, type InlineModeState, type InlineModeUpdate } from "../lib/inline-modes";
 import { createMockContext, createMockPi } from "../test/mocks/pi-coding-agent";
 import { VIM_LEADER_EVENT } from "../vim-leader/protocol";
 import extension from "./index";
 
+const inlineModes = new WeakMap<object, Map<string, InlineModeState>>();
+
 function setup() {
   const pi = createMockPi();
+  const modes = new Map<string, InlineModeState>();
+  inlineModes.set(pi, modes);
+  pi.events.on(INLINE_MODE_EVENT, (data) => {
+    const update = data as InlineModeUpdate;
+    if (update.state) modes.set(update.id, update.state);
+    else modes.delete(update.id);
+  });
   extension(pi as any);
   return pi;
 }
 
-afterEach(() => setInlineMode("yosoi", undefined));
+function yosoiMode(pi: object): InlineModeState | undefined {
+  return inlineModes.get(pi)?.get("yosoi");
+}
 
 describe("yosoi-workflows extension", () => {
   it("starts with the dashboard and inline pill off", () => {
@@ -20,7 +31,7 @@ describe("yosoi-workflows extension", () => {
     pi.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
 
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", undefined);
-    expect(getInlineModes()).toEqual([]);
+    expect(yosoiMode(pi)).toBeUndefined();
   });
 
   it("registers /yosoi and the short /ys alias", () => {
@@ -53,16 +64,17 @@ describe("yosoi-workflows extension", () => {
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", undefined);
   });
 
-  it("toggles the detailed dashboard and zero-run pill with leader-y", () => {
+  it("toggles the detailed dashboard with leader-y", () => {
     const pi = setup();
     const ctx = createMockContext();
     pi.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
     vi.clearAllMocks();
 
-    pi.events.emit(VIM_LEADER_EVENT, { sequence: "y" });
+    pi.events.emit(VIM_LEADER_EVENT, { sequence: "y", action: "yosoi" });
 
     expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", expect.any(Function));
-    expect(getInlineModes()[0]?.state).toMatchObject({ label: "YS", detail: "0", icon: "" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Yosoi dashboard shown", "info");
+    expect(yosoiMode(pi)).toMatchObject({ label: "YS", detail: "0", icon: "" });
   });
 
   it("animates a globe pill while Yosoi runs and settles to a count", async () => {
@@ -75,7 +87,7 @@ describe("yosoi-workflows extension", () => {
       ctx,
     );
 
-    const running = getInlineModes()[0]?.state;
+    const running = yosoiMode(pi);
     expect(running).toMatchObject({ label: "YS", detail: "FETCH", intervalMs: 140 });
     expect(running?.frames?.map((frame) => frame.icon)).toEqual(["", "", "", ""]);
 
@@ -84,7 +96,7 @@ describe("yosoi-workflows extension", () => {
       ctx,
     );
 
-    expect(getInlineModes()[0]?.state).toMatchObject({ label: "YS", detail: "1", icon: "", tone: "success" });
-    expect(getInlineModes()[0]?.state.frames).toBeUndefined();
+    expect(yosoiMode(pi)).toMatchObject({ label: "YS", detail: "1", icon: "", tone: "success" });
+    expect(yosoiMode(pi)?.frames).toBeUndefined();
   });
 });

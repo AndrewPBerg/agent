@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { setInlineMode } from "./lib/inline-modes";
+import { publishInlineMode } from "./lib/inline-modes";
 import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "./vim-leader/protocol";
 
 const workflows = ["help", "search", "fetch", "crawl", "research"] as const;
@@ -342,9 +342,9 @@ function dashboardHeader(width: number): string {
   return truncateToWidth(`Yosoi runs ${runs.length} • ${formatTokens(latestContextTokens)}${scroll} • /ys show toggles`, width, "…");
 }
 
-function syncInlineMode(): void {
+function syncInlineMode(pi: ExtensionAPI): void {
   if (runs.length === 0) {
-    setInlineMode("yosoi", dashboardVisible ? { label: "YS", detail: "0", icon: "", tone: "accent", priority: 100 } : undefined);
+    publishInlineMode(pi, "yosoi", dashboardVisible ? { label: "YS", detail: "0", icon: "", tone: "accent", priority: 100 } : undefined);
     return;
   }
 
@@ -352,7 +352,7 @@ function syncInlineMode(): void {
     const current = [...active.values()].at(-1);
     const workflow = current?.workflow.toUpperCase() ?? "RUNNING";
     const detail = active.size > 1 ? `${workflow} +${active.size - 1}` : workflow;
-    setInlineMode("yosoi", {
+    publishInlineMode(pi, "yosoi", {
       label: "YS",
       detail,
       frames: [
@@ -369,7 +369,7 @@ function syncInlineMode(): void {
 
   const latest = runs.at(-1);
   const failed = latest?.status === "error";
-  setInlineMode("yosoi", {
+  publishInlineMode(pi, "yosoi", {
     label: "YS",
     detail: failed ? `${runs.length} ✗` : String(runs.length),
     icon: "",
@@ -378,8 +378,8 @@ function syncInlineMode(): void {
   });
 }
 
-function renderDashboard(ctx: ExtensionContext): void {
-  syncInlineMode();
+function renderDashboard(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  syncInlineMode(pi);
   latestContextTokens = usageTokens(latestUsage(ctx)) || latestContextTokens;
   ctx.ui.setStatus("yosoi", `yosoi ${runs.length}${active.size ? `/${active.size} running` : ""}`);
   if (!dashboardVisible || !ctx.hasUI) {
@@ -396,23 +396,23 @@ function renderDashboard(ctx: ExtensionContext): void {
   }));
 }
 
-function toggleDashboard(ctx: ExtensionContext): void {
+function toggleDashboard(pi: ExtensionAPI, ctx: ExtensionContext): void {
   dashboardVisible = !dashboardVisible;
-  renderDashboard(ctx);
+  renderDashboard(pi, ctx);
   ctx.ui.notify(`Yosoi dashboard ${dashboardVisible ? "shown" : "hidden"}`, "info");
 }
 
-async function handleYosoiCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+async function handleYosoiCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): Promise<void> {
   const { command, target } = parseArgs(args);
   if (command === "show") {
-    toggleDashboard(ctx);
+    toggleDashboard(pi, ctx);
     return;
   }
   if (command === "clear") {
     runs.length = 0;
     active.clear();
     latestContextTokens = usageTokens(latestUsage(ctx)) || undefined;
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
     ctx.ui.notify("Yosoi dashboard cleared", "info");
     return;
   }
@@ -420,20 +420,20 @@ async function handleYosoiCommand(args: string, ctx: ExtensionCommandContext): P
     dashboardScrollOffset += 1;
     clampDashboardScroll();
     dashboardVisible = true;
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
     return;
   }
   if (command === "newer") {
     dashboardScrollOffset -= 1;
     clampDashboardScroll();
     dashboardVisible = true;
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
     return;
   }
   if (command === "latest") {
     dashboardScrollOffset = 0;
     dashboardVisible = true;
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
     return;
   }
 
@@ -450,25 +450,25 @@ export default function (pi: ExtensionAPI) {
   dashboardVisible = false;
   dashboardScrollOffset = 0;
   latestContextTokens = undefined;
-  setInlineMode("yosoi", undefined);
+  publishInlineMode(pi, "yosoi", undefined);
 
   let sessionCtx: ExtensionContext | undefined;
   const unsubscribeLeader = pi.events.on(VIM_LEADER_EVENT, (data) => {
     const invocation = data as VimLeaderInvocation;
-    if (invocation?.sequence === "y" && sessionCtx) toggleDashboard(sessionCtx);
+    if (invocation?.action === "yosoi" && sessionCtx) toggleDashboard(pi, sessionCtx);
   });
 
   const commandOptions = {
     description: "Prefill a Yosoi workflow prompt or toggle the Yosoi run dashboard",
     getArgumentCompletions: completions,
-    handler: handleYosoiCommand,
+    handler: (args: string, ctx: ExtensionCommandContext) => handleYosoiCommand(pi, args, ctx),
   };
   pi.registerCommand("yosoi", commandOptions);
   pi.registerCommand("ys", commandOptions);
 
   pi.on("session_start", (_event, ctx) => {
     sessionCtx = ctx;
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
   });
 
   pi.on("tool_call", (event, ctx) => {
@@ -494,7 +494,7 @@ export default function (pi: ExtensionAPI) {
     runs.push(run);
     while (runs.length > 25) runs.shift();
     active.set(event.toolCallId, run);
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -514,18 +514,18 @@ export default function (pi: ExtensionAPI) {
 
     const payload = firstJsonObject(output) ?? (run.outputPath ? await readSmallJsonArtifact(ctx.cwd, run.outputPath) : undefined);
     if (payload) applyJsonSummary(run, payload);
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
   });
 
   pi.on("agent_end", (_event, ctx) => {
     latestContextTokens = usageTokens(latestUsage(ctx)) || latestContextTokens;
-    renderDashboard(ctx);
+    renderDashboard(pi, ctx);
   });
 
   pi.on("session_shutdown", () => {
     unsubscribeLeader();
     installedApis.delete(pi as object);
     sessionCtx = undefined;
-    setInlineMode("yosoi", undefined);
+    publishInlineMode(pi, "yosoi", undefined);
   });
 }

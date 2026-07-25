@@ -1,8 +1,28 @@
 export type AutocompleteItem = any;
 export type Component = any;
 
+export const Key = {
+  escape: "escape",
+  enter: "enter",
+  left: "left",
+  right: "right",
+  up: "up",
+  down: "down",
+} as const;
+
 export class Text {
   constructor(public text: string = "") {}
+}
+
+export class Image {
+  readonly args: any[];
+  constructor(...args: any[]) {
+    this.args = args;
+  }
+  render() {
+    return [];
+  }
+  invalidate() {}
 }
 
 export class Markdown {
@@ -40,6 +60,10 @@ export function wrapTextWithAnsi(value: string, width: number) {
 
 export function matchesKey() {
   return false;
+}
+
+export function isKeyRelease(data: string) {
+  return data.includes(":3u") || data.includes(":3~") || data.includes(":3;");
 }
 
 export function truncateToWidth(value: string, width: number) {

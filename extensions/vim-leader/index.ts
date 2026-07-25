@@ -1,12 +1,26 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
+import { LEADER_MAPPINGS } from "../../leader-mappings";
 import { VIM_LEADER_EVENT } from "./protocol";
 
 const LEADER = " ";
 const LEADER_TIMEOUT_MS = 500;
-const SEQUENCES = ["d", "m", "y"] as const;
+const SEQUENCES = Object.keys(LEADER_MAPPINGS) as Array<keyof typeof LEADER_MAPPINGS>;
 
-export default function vimLeader(pi: ExtensionAPI) {
+type VimLeaderDependencies = {
+  submitEditor: () => void;
+  defer: (callback: () => void) => void;
+};
+
+const defaultDependencies: VimLeaderDependencies = {
+  submitEditor: () => {
+    process.stdin.emit("data", Buffer.from("\r"));
+  },
+  defer: queueMicrotask,
+};
+
+export function createVimLeader(pi: ExtensionAPI, dependencies: Partial<VimLeaderDependencies> = {}) {
+  const deps = { ...defaultDependencies, ...dependencies };
   let sequence: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let unsubscribeTerminal: (() => void) | undefined;
@@ -22,6 +36,10 @@ export default function vimLeader(pi: ExtensionAPI) {
 
     unsubscribeTerminal?.();
     unsubscribeTerminal = ctx.ui.onTerminalInput((data) => {
+      // Raw extension listeners run before TUI filters Kitty key-release events.
+      // A Space release must not cancel the leader before the command key arrives.
+      if (isKeyRelease(data)) return undefined;
+
       if (sequence === undefined) {
         if (!isKey(data, "space", LEADER) || ctx.ui.getEditorText().length !== 0) return undefined;
         sequence = "";
@@ -33,8 +51,10 @@ export default function vimLeader(pi: ExtensionAPI) {
       const exact = SEQUENCES.find((candidate) => candidate === sequence);
       const prefix = SEQUENCES.some((candidate) => candidate.startsWith(sequence));
       if (exact) {
+        const action = LEADER_MAPPINGS[exact];
         clear();
-        pi.events.emit(VIM_LEADER_EVENT, { sequence: exact });
+        if (action === "reload") triggerReload(ctx, deps);
+        else pi.events.emit(VIM_LEADER_EVENT, { sequence: exact, action });
         return { consume: true };
       }
       if (prefix) return { consume: true };
@@ -50,6 +70,15 @@ export default function vimLeader(pi: ExtensionAPI) {
     unsubscribeTerminal?.();
     unsubscribeTerminal = undefined;
   });
+}
+
+export default function vimLeader(pi: ExtensionAPI) {
+  createVimLeader(pi);
+}
+
+function triggerReload(ctx: ExtensionContext, deps: VimLeaderDependencies) {
+  ctx.ui.setEditorText("/reload");
+  deps.defer(deps.submitEditor);
 }
 
 function sequenceKey(data: string): string | undefined {

@@ -192,7 +192,7 @@ describe("push-based subagent mailbox", () => {
         }),
     );
 
-    pi.events.emit(VIM_LEADER_EVENT, { sequence: "m" });
+    pi.events.emit(VIM_LEADER_EVENT, { sequence: "m", action: "mailbox" });
     await vi.waitFor(() => expect(rendered.length).toBeGreaterThan(0));
 
     expect(rendered.join("\n")).toContain("Mailbox monitor · 1 active · 0 pending · cap 6");
