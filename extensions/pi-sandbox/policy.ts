@@ -16,6 +16,7 @@ export const HOST_EXECUTION_TOOLS = new Set([
   "flameframe_inspect",
   "flameframe_process",
   "flameframe_zoom",
+  "spawn_agent",
 ]);
 
 export function normalizeToolPath(inputPath: string, cwd: string): string {
@@ -95,6 +96,12 @@ export async function protectedPathReason(inputPath: string, cwd: string, home =
   return undefined;
 }
 
+export async function allowedCanonicalPath(inputPath: string, cwd: string, home = process.env.HOME ?? ""): Promise<string> {
+  const reason = await protectedPathReason(inputPath, cwd, home);
+  if (reason) throw new Error(`Sandbox blocked access to ${normalizeToolPath(inputPath, cwd)}: ${reason}.`);
+  return canonicalizeWithExistingParent(normalizeToolPath(inputPath, cwd));
+}
+
 async function pathKind(path: string): Promise<"directory" | "file" | undefined> {
   try {
     const info = await lstat(path);
@@ -148,24 +155,22 @@ async function discoverSensitiveFiles(root: string): Promise<string[]> {
   return found;
 }
 
-export async function sensitiveFilesForSandbox(cwd: string, home: string): Promise<string[]> {
-  const roots = new Set([resolve(cwd), resolve(home)]);
-  const found = new Set<string>();
-  for (const root of roots) {
-    for (const path of await discoverSensitiveFiles(root)) found.add(path);
-  }
+export async function sensitiveFilesInRoot(root: string): Promise<string[]> {
+  return discoverSensitiveFiles(resolve(root));
+}
 
+export async function piCredentialFiles(home: string): Promise<string[]> {
+  const found: string[] = [];
   for (const path of [join(home, ".pi", "agent", "auth.json"), join(home, ".pi", "agent", "settings.json")]) {
     if ((await pathKind(path)) === "file") {
       try {
-        found.add(await realpath(path));
+        found.push(await realpath(path));
       } catch {
-        found.add(path);
+        found.push(path);
       }
     }
   }
-
-  return [...found].sort();
+  return found;
 }
 
 export async function workspaceAndGitMounts(cwd: string): Promise<string[]> {

@@ -22,6 +22,9 @@
         "thinkingLevelMap": {
           "xhigh": "xhigh",
           "minimal": "low"
+        },
+        "compat": {
+          "supportsOpenAIGrammarTools": true
         }
       },
       {
@@ -57,6 +60,7 @@
           "minimal": "low"
         },
         "compat": {
+          "supportsOpenAIGrammarTools": true,
           "supportsToolSearch": true
         }
       },
@@ -84,6 +88,7 @@
           "minimal": "low"
         },
         "compat": {
+          "supportsOpenAIGrammarTools": true,
           "supportsToolSearch": true
         }
       },
@@ -120,6 +125,7 @@
           "minimal": "low"
         },
         "compat": {
+          "supportsOpenAIGrammarTools": true,
           "supportsToolSearch": true
         }
       },
@@ -149,7 +155,7 @@
             }
           ]
         },
-        "contextWindow": 372000,
+        "contextWindow": 272000,
         "maxTokens": 128000,
         "thinkingLevelMap": {
           "xhigh": "xhigh",
@@ -157,6 +163,7 @@
           "minimal": "low"
         },
         "compat": {
+          "supportsOpenAIGrammarTools": true,
           "supportsToolSearch": true
         }
       },
@@ -186,7 +193,7 @@
             }
           ]
         },
-        "contextWindow": 372000,
+        "contextWindow": 272000,
         "maxTokens": 128000,
         "thinkingLevelMap": {
           "xhigh": "xhigh",
@@ -194,6 +201,7 @@
           "minimal": "low"
         },
         "compat": {
+          "supportsOpenAIGrammarTools": true,
           "supportsToolSearch": true
         }
       },
@@ -223,7 +231,7 @@
             }
           ]
         },
-        "contextWindow": 372000,
+        "contextWindow": 272000,
         "maxTokens": 128000,
         "thinkingLevelMap": {
           "xhigh": "xhigh",
@@ -231,10 +239,11 @@
           "minimal": "low"
         },
         "compat": {
+          "supportsOpenAIGrammarTools": true,
           "supportsToolSearch": true
         }
       }
     ],
-    "checkedAt": 1784497830542
+    "checkedAt": 1784995866561
   }
 }

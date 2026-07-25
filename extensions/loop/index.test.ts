@@ -4,7 +4,7 @@ import loop, { parseLoopDsl } from "./index";
 
 describe("loop extension", () => {
   it("parses an objective followed by repeated same-session commands", () => {
-    expect(parseLoopDsl("ship auth | qa make it clean loop 3")).toEqual([
+    expect(parseLoopDsl("ship auth | qa make it clean lp 3")).toEqual([
       { prompt: "ship auth" },
       { prompt: "/qa make it clean" },
       { prompt: "/qa make it clean" },
@@ -14,8 +14,8 @@ describe("loop extension", () => {
 
   it("rejects empty stages and invalid repeat counts", () => {
     expect(parseLoopDsl("ship | | qa")).toBeNull();
-    expect(parseLoopDsl("ship | qa loop 0")).toBeNull();
-    expect(parseLoopDsl("ship | qa loop 26")).toBeNull();
+    expect(parseLoopDsl("ship | qa lp 0")).toBeNull();
+    expect(parseLoopDsl("ship | qa lp 26")).toBeNull();
   });
 
   it("advances only after the current agent run settles", async () => {
@@ -24,7 +24,7 @@ describe("loop extension", () => {
     loop(pi);
     const ctx = createMockContext({ isIdle: vi.fn(() => true) });
 
-    await pi.commands.get("loop").handler("ship auth | qa loop 2", ctx);
+    await pi.commands.get("lp").handler("ship auth | qa lp 2", ctx);
     expect(pi.sendUserMessage).toHaveBeenLastCalledWith("ship auth");
 
     const settled = pi.events.get("agent_settled")?.[0];
@@ -44,8 +44,8 @@ describe("loop extension", () => {
     loop(pi);
     const ctx = createMockContext({ isIdle: vi.fn(() => true) });
 
-    await pi.commands.get("loop").handler("ship | qa", ctx);
-    await pi.commands.get("loop").handler("stop", ctx);
+    await pi.commands.get("lp").handler("ship | qa", ctx);
+    await pi.commands.get("lp").handler("stop", ctx);
     await pi.events.get("agent_settled")?.[0]({}, ctx);
 
     expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);

@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=../schemas/loop-workflow.schema.json
+version: 1
+defaults:
+  prMode: draft
+workflows:
+  qa-pr:
+    description: QA the current diff until clean, run matching real stress profiles, then create a draft PR.
+    stages:
+      - type: qa
+        maxAttempts: 3
+      - type: stress
+        profile: auto
+      - type: pr
+        mode: draft
+        when: passed

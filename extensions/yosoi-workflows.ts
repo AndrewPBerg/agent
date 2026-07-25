@@ -3,6 +3,8 @@ import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { setInlineMode } from "./lib/inline-modes";
+import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "./vim-leader/protocol";
 
 const workflows = ["help", "search", "fetch", "crawl", "research"] as const;
 const commands = ["help", "search", "fetch", "crawl", "research", "show", "clear", "older", "newer", "latest"] as const;
@@ -40,25 +42,26 @@ interface UsageLike {
 
 const runs: YosoiRun[] = [];
 const active = new Map<string, YosoiRun>();
-let dashboardVisible = true;
+const installedApis = new WeakSet<object>();
+let dashboardVisible = false;
 let dashboardScrollOffset = 0;
 let latestContextTokens: number | undefined;
 
 const workflowPrompts: Record<Workflow, (target: string) => string> = {
-  help: () => `Use the project-local Yosoi web workflows.
+  help: () => `Use the global Yosoi web workflows.
 
 Read:
-- .agents/skills/yosoi-web-workflows/SKILL.md
-- .agents/skills/yosoi-fetch/SKILL.md when fetching page evidence
-- .agents/skills/yosoi-research-frontier/SKILL.md when creating a research packet
+- ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md
+- ~/.pi/agent/skills/yosoi-fetch/SKILL.md when fetching page evidence
+- ~/.pi/agent/skills/yosoi-research-frontier/SKILL.md when creating a research packet
 
-Summarize the right Yosoi command path for my task. Use uv-run commands only.`,
+Summarize the right Yosoi command path for my task. Use uvx or uv run commands only.`,
 
   search: (target) => `Use Yosoi search for source discovery.
 
 Target/query: ${target || "<fill query>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md.
 Start with:
 uvx yosoi search "${target || "QUERY"}" --limit 10 --json > .yosoi/search-results.json
 
@@ -70,7 +73,7 @@ Then inspect candidate URLs, fetch promising pages before making content claims,
 
 URL(s): ${target || "<fill URL>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md and .agents/skills/yosoi-fetch/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md and ~/.pi/agent/skills/yosoi-fetch/SKILL.md.
 Start with:
 uvx yosoi fetch ${target || "URL"} --view text --chars 12000 --concurrency 5 --json
 
@@ -80,7 +83,7 @@ For multiple URLs, fetch runs in ordered batches of up to --concurrency URLs (de
 
 Seed(s): ${target || "<fill seed URL>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md.
 Start conservatively:
 uvx yosoi crawl "${target || "URL"}" --limit 25 --json > .yosoi/crawl-results.json
 
@@ -90,7 +93,7 @@ Respect policy/robots settings, keep output as artifacts, and fetch/scrape repre
 
 Topic: ${target || "<fill topic>"}
 
-Follow .agents/skills/yosoi-web-workflows/SKILL.md and .agents/skills/yosoi-research-frontier/SKILL.md.
+Follow ~/.pi/agent/skills/yosoi-web-workflows/SKILL.md and ~/.pi/agent/skills/yosoi-research-frontier/SKILL.md.
 Start with:
 uvx yosoi research init "${target || "TOPIC"}" --json
 
@@ -339,7 +342,44 @@ function dashboardHeader(width: number): string {
   return truncateToWidth(`Yosoi runs ${runs.length} • ${formatTokens(latestContextTokens)}${scroll} • /ys show toggles`, width, "…");
 }
 
+function syncInlineMode(): void {
+  if (runs.length === 0) {
+    setInlineMode("yosoi", dashboardVisible ? { label: "YS", detail: "0", icon: "", tone: "accent", priority: 100 } : undefined);
+    return;
+  }
+
+  if (active.size > 0) {
+    const current = [...active.values()].at(-1);
+    const workflow = current?.workflow.toUpperCase() ?? "RUNNING";
+    const detail = active.size > 1 ? `${workflow} +${active.size - 1}` : workflow;
+    setInlineMode("yosoi", {
+      label: "YS",
+      detail,
+      frames: [
+        { icon: "", tone: "dim" },
+        { icon: "", tone: "muted" },
+        { icon: "", tone: "accent" },
+        { icon: "", tone: "muted" },
+      ],
+      intervalMs: 140,
+      priority: 100,
+    });
+    return;
+  }
+
+  const latest = runs.at(-1);
+  const failed = latest?.status === "error";
+  setInlineMode("yosoi", {
+    label: "YS",
+    detail: failed ? `${runs.length} ✗` : String(runs.length),
+    icon: "",
+    tone: failed ? "error" : "success",
+    priority: 100,
+  });
+}
+
 function renderDashboard(ctx: ExtensionContext): void {
+  syncInlineMode();
   latestContextTokens = usageTokens(latestUsage(ctx)) || latestContextTokens;
   ctx.ui.setStatus("yosoi", `yosoi ${runs.length}${active.size ? `/${active.size} running` : ""}`);
   if (!dashboardVisible || !ctx.hasUI) {
@@ -356,12 +396,16 @@ function renderDashboard(ctx: ExtensionContext): void {
   }));
 }
 
+function toggleDashboard(ctx: ExtensionContext): void {
+  dashboardVisible = !dashboardVisible;
+  renderDashboard(ctx);
+  ctx.ui.notify(`Yosoi dashboard ${dashboardVisible ? "shown" : "hidden"}`, "info");
+}
+
 async function handleYosoiCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
   const { command, target } = parseArgs(args);
   if (command === "show") {
-    dashboardVisible = !dashboardVisible;
-    renderDashboard(ctx);
-    ctx.ui.notify(`Yosoi dashboard ${dashboardVisible ? "shown" : "hidden"}`, "info");
+    toggleDashboard(ctx);
     return;
   }
   if (command === "clear") {
@@ -398,6 +442,22 @@ async function handleYosoiCommand(args: string, ctx: ExtensionCommandContext): P
 }
 
 export default function (pi: ExtensionAPI) {
+  if (installedApis.has(pi as object)) return;
+  installedApis.add(pi as object);
+
+  runs.length = 0;
+  active.clear();
+  dashboardVisible = false;
+  dashboardScrollOffset = 0;
+  latestContextTokens = undefined;
+  setInlineMode("yosoi", undefined);
+
+  let sessionCtx: ExtensionContext | undefined;
+  const unsubscribeLeader = pi.events.on(VIM_LEADER_EVENT, (data) => {
+    const invocation = data as VimLeaderInvocation;
+    if (invocation?.sequence === "y" && sessionCtx) toggleDashboard(sessionCtx);
+  });
+
   const commandOptions = {
     description: "Prefill a Yosoi workflow prompt or toggle the Yosoi run dashboard",
     getArgumentCompletions: completions,
@@ -407,6 +467,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("ys", commandOptions);
 
   pi.on("session_start", (_event, ctx) => {
+    sessionCtx = ctx;
     renderDashboard(ctx);
   });
 
@@ -459,5 +520,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", (_event, ctx) => {
     latestContextTokens = usageTokens(latestUsage(ctx)) || latestContextTokens;
     renderDashboard(ctx);
+  });
+
+  pi.on("session_shutdown", () => {
+    unsubscribeLeader();
+    installedApis.delete(pi as object);
+    sessionCtx = undefined;
+    setInlineMode("yosoi", undefined);
   });
 }

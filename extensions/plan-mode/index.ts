@@ -285,6 +285,7 @@ export default function planMode(pi: ExtensionAPI) {
     } as any,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const options = Array.isArray(params.options) ? params.options.map(String).filter(Boolean).slice(0, 6) : [];
+      if (ctx.mode === "tui") ctx.ui.notify("Plan mode needs your input.", "info");
       const answer = ctx.mode === "tui" ? await ctx.ui.select(String(params.question), [...options, "Other / no preference"]) : undefined;
       return {
         content: [

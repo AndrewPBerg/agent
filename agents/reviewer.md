@@ -1,8 +1,8 @@
 ---
 name: reviewer
 description: Fresh-context review gate for instruction following, scope, and verification honesty.
-tools: Read, Grep, Glob
-model: gpt-5.5
+tools: read, grep, find, bash
+model: openai-codex/gpt-5.5
 permissionMode: plan
 maxTurns: 4
 background: false

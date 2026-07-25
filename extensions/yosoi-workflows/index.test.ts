@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getInlineModes, setInlineMode } from "../lib/inline-modes";
 import { createMockContext, createMockPi } from "../test/mocks/pi-coding-agent";
+import { VIM_LEADER_EVENT } from "../vim-leader/protocol";
 import extension from "./index";
 
 function setup() {
@@ -8,77 +10,81 @@ function setup() {
   return pi;
 }
 
+afterEach(() => setInlineMode("yosoi", undefined));
+
 describe("yosoi-workflows extension", () => {
-  it("does not render or track runs before a YoSoi skill is loaded", async () => {
+  it("starts with the dashboard and inline pill off", () => {
     const pi = setup();
     const ctx = createMockContext();
 
     pi.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
-    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
-    expect(ctx.ui.setWidget).not.toHaveBeenCalled();
 
-    const toolCall = pi.events.get("tool_call")?.[0];
-    toolCall?.({ toolName: "bash", toolCallId: "run-1", input: { command: "uvx yosoi fetch https://example.com --json" } }, ctx);
-    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+    expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", undefined);
+    expect(getInlineModes()).toEqual([]);
   });
 
-  it("does not activate from before_agent_start loaded skill inventory", async () => {
+  it("registers /yosoi and the short /ys alias", () => {
+    const pi = setup();
+
+    expect(pi.commands.has("yosoi")).toBe(true);
+    expect(pi.commands.has("ys")).toBe(true);
+  });
+
+  it("prefills workflows with global Pi skill paths", async () => {
     const pi = setup();
     const ctx = createMockContext();
 
-    pi.events.get("before_agent_start")?.[0]?.({ systemPromptOptions: { skills: [{ name: "yosoi-fetch" }] } }, ctx);
+    await pi.commands.get("ys").handler("fetch https://example.com", ctx);
 
-    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+    expect(ctx.ui.setEditorText).toHaveBeenCalledWith(expect.stringContaining("~/.pi/agent/skills/yosoi-web-workflows/SKILL.md"));
+    expect(ctx.ui.setEditorText).toHaveBeenCalledWith(expect.not.stringContaining(".agents/skills"));
   });
 
-  it("activates when a YoSoi skill file is read", async () => {
+  it("toggles the detailed dashboard with /ys show", async () => {
     const pi = setup();
     const ctx = createMockContext();
-
-    pi.events.get("tool_call")?.[0]?.({ toolName: "read", toolCallId: "read-1", input: { path: "/x/yosoi-fetch/SKILL.md" } }, ctx);
-
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("yosoi", "yosoi 0");
-  });
-
-  it("tracks uvx yosoi commands after activation", async () => {
-    const pi = setup();
-    const ctx = createMockContext();
-    pi.events.get("tool_call")?.[0]?.({ toolName: "read", toolCallId: "read-1", input: { path: "/x/yosoi-web-workflows/SKILL.md" } }, ctx);
+    pi.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
     vi.clearAllMocks();
+
+    await pi.commands.get("ys").handler("show", ctx);
+    expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", expect.any(Function));
+
+    await pi.commands.get("ys").handler("show", ctx);
+    expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", undefined);
+  });
+
+  it("toggles the detailed dashboard and zero-run pill with leader-y", () => {
+    const pi = setup();
+    const ctx = createMockContext();
+    pi.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+    vi.clearAllMocks();
+
+    pi.events.emit(VIM_LEADER_EVENT, { sequence: "y" });
+
+    expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("yosoi-dashboard", expect.any(Function));
+    expect(getInlineModes()[0]?.state).toMatchObject({ label: "YS", detail: "0", icon: "" });
+  });
+
+  it("animates a globe pill while Yosoi runs and settles to a count", async () => {
+    const pi = setup();
+    const ctx = createMockContext();
+    pi.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
 
     pi.events.get("tool_call")?.[0]?.(
       { toolName: "bash", toolCallId: "run-1", input: { command: "uvx yosoi fetch https://example.com --json" } },
       ctx,
     );
 
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("yosoi", "yosoi 1/1 running");
-  });
+    const running = getInlineModes()[0]?.state;
+    expect(running).toMatchObject({ label: "YS", detail: "FETCH", intervalMs: 140 });
+    expect(running?.frames?.map((frame) => frame.icon)).toEqual(["", "", "", ""]);
 
-  it("explicit /skill:yosoi input activates dashboard helpers", async () => {
-    const pi = setup();
-    const ctx = createMockContext();
+    await pi.events.get("tool_result")?.[0]?.(
+      { toolName: "bash", toolCallId: "run-1", content: [{ type: "text", text: '{"status":"ok"}' }], isError: false },
+      ctx,
+    );
 
-    pi.events.get("input")?.[0]?.({ text: "/skill:yosoi-fetch", images: [], source: "interactive" }, ctx);
-
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("yosoi", "yosoi 0");
-  });
-
-  it("/yosoi command prompts reference installed pi skill paths", async () => {
-    const pi = setup();
-    const ctx = createMockContext();
-
-    await pi.commands.get("yosoi").handler("fetch https://example.com", ctx);
-
-    expect(ctx.ui.setEditorText).toHaveBeenCalledWith(expect.stringContaining("~/.pi/agent/skills/yosoi-web-workflows/SKILL.md"));
-    expect(ctx.ui.setEditorText).toHaveBeenCalledWith(expect.not.stringContaining(".agents/skills"));
-  });
-
-  it("/yosoi command activates dashboard helpers explicitly", async () => {
-    const pi = setup();
-    const ctx = createMockContext();
-
-    await pi.commands.get("yosoi").handler("dashboard", ctx);
-
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("yosoi", "yosoi 0");
+    expect(getInlineModes()[0]?.state).toMatchObject({ label: "YS", detail: "1", icon: "", tone: "success" });
+    expect(getInlineModes()[0]?.state.frames).toBeUndefined();
   });
 });

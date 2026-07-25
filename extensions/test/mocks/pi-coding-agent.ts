@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 export type ExtensionAPI = MockPi;
 export type ExtensionContext = any;
 export type ExtensionCommandContext = any;
@@ -39,6 +41,57 @@ export function createBashTool(_cwd: string, options: any = {}) {
   };
 }
 
+export function createReadTool(cwd: string, options: any = {}) {
+  return {
+    name: "read",
+    label: "read",
+    description: "Read a file",
+    parameters: {},
+    execute: vi.fn(async (_id, params) => {
+      if (!options.operations) return { content: [{ type: "text", text: "local read" }], details: undefined };
+      const path = resolve(cwd, params.path);
+      await options.operations.access(path);
+      const content = await options.operations.readFile(path);
+      return { content: [{ type: "text", text: content.toString() }], details: undefined };
+    }),
+  };
+}
+
+export function createWriteTool(cwd: string, options: any = {}) {
+  return {
+    name: "write",
+    label: "write",
+    description: "Write a file",
+    parameters: {},
+    execute: vi.fn(async (_id, params) => {
+      if (options.operations) {
+        const path = resolve(cwd, params.path);
+        await options.operations.mkdir(resolve(path, ".."));
+        await options.operations.writeFile(path, params.content);
+      }
+      return { content: [{ type: "text", text: "written" }], details: undefined };
+    }),
+  };
+}
+
+export function createEditTool(cwd: string, options: any = {}) {
+  return {
+    name: "edit",
+    label: "edit",
+    description: "Edit a file",
+    parameters: {},
+    execute: vi.fn(async (_id, params) => {
+      if (options.operations) {
+        const path = resolve(cwd, params.path);
+        await options.operations.access(path);
+        const content = (await options.operations.readFile(path)).toString();
+        await options.operations.writeFile(path, content);
+      }
+      return { content: [{ type: "text", text: "edited" }], details: undefined };
+    }),
+  };
+}
+
 export function createGrepTool(_cwd: string) {
   return {
     name: "grep",
@@ -60,11 +113,29 @@ export class SessionManager {
 
 export const CONFIG_DIR_NAME = ".pi";
 
+class MockEventBus extends Map<string, Array<(...args: any[]) => any>> {
+  on(channel: string, handler: (...args: any[]) => any) {
+    const handlers = this.get(channel) ?? [];
+    handlers.push(handler);
+    this.set(channel, handlers);
+    return () =>
+      this.set(
+        channel,
+        (this.get(channel) ?? []).filter((candidate) => candidate !== handler),
+      );
+  }
+
+  emit(channel: string, data: unknown) {
+    for (const handler of this.get(channel) ?? []) handler(data);
+  }
+}
+
 export class MockPi {
-  events = new Map<string, Array<(...args: any[]) => any>>();
+  events = new MockEventBus();
   commands = new Map<string, any>();
   tools = new Map<string, any>();
   messageRenderers = new Map<string, any>();
+  entryRenderers = new Map<string, any>();
   toolRenderers = new Map<string, any>();
   shortcuts = new Map<string, any>();
   flags = new Map<string, any>();
@@ -92,6 +163,10 @@ export class MockPi {
     this.messageRenderers.set(type, renderer);
   }
 
+  registerEntryRenderer(type: string, renderer: any) {
+    this.entryRenderers.set(type, renderer);
+  }
+
   registerToolRenderer(name: string, renderer: any) {
     this.toolRenderers.set(name, renderer);
   }
@@ -108,8 +183,9 @@ export class MockPi {
     this.entries.push({ customType, data });
   }
 
-  sendUserMessage() {}
-  sendMessage() {}
+  sendUserMessage(_content?: unknown, _options?: unknown) {}
+  sendMessage(_message?: unknown, _options?: unknown) {}
+  exec = vi.fn(async (_command: string, _args: string[], _options?: unknown) => ({ stdout: "", stderr: "", code: 0 }));
   getActiveTools() {
     return this.activeTools;
   }
@@ -147,6 +223,8 @@ export function createMockContext(overrides: Partial<any> = {}) {
       getEntries: vi.fn(() => []),
       getLeafId: vi.fn(() => undefined),
       getSessionFile: vi.fn(() => undefined),
+      getSessionId: vi.fn(() => "session-id"),
+      getHeader: vi.fn(() => ({ id: "session-id" })),
     },
     cwd: process.cwd(),
     mode: "tui",

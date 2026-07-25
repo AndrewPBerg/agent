@@ -3,8 +3,9 @@ import { constants as fsConstants } from "node:fs";
 import { access, chmod, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { existingProtectedDirectories, sensitiveFilesForSandbox, workspaceAndGitMounts } from "./policy";
+import { existingProtectedDirectories, piCredentialFiles, sensitiveFilesInRoot, workspaceAndGitMounts } from "./policy";
 
+const homeMaskCache = new Map<string, Promise<string[]>>();
 const DEFAULT_CAPTURE_LIMIT_BYTES = 64 * 1024;
 
 const SAFE_ENVIRONMENT_NAMES = new Set([
@@ -62,6 +63,17 @@ function sandboxEnvironment(env: NodeJS.ProcessEnv, home: string, cacheRoot: str
   return result;
 }
 
+async function sensitiveFilesForInvocation(cwd: string, home: string): Promise<string[]> {
+  const homeKey = resolve(home);
+  let cachedHomeFiles = homeMaskCache.get(homeKey);
+  if (!cachedHomeFiles) {
+    cachedHomeFiles = Promise.all([sensitiveFilesInRoot(homeKey), piCredentialFiles(homeKey)]).then((groups) => groups.flat());
+    homeMaskCache.set(homeKey, cachedHomeFiles);
+  }
+  const [homeFiles, workspaceFiles] = await Promise.all([cachedHomeFiles, sensitiveFilesInRoot(cwd)]);
+  return [...new Set([...homeFiles, ...workspaceFiles])].sort();
+}
+
 async function buildBubblewrapArgs(options: SandboxRunOptions): Promise<{ bwrapPath: string; args: string[]; hostEnv: NodeJS.ProcessEnv }> {
   const home = resolve(options.home ?? process.env.HOME ?? "/tmp/pi-sandbox-home");
   const bwrapPath = options.bwrapPath ?? process.env.PI_BWRAP_PATH ?? "/usr/bin/bwrap";
@@ -108,7 +120,7 @@ async function buildBubblewrapArgs(options: SandboxRunOptions): Promise<{ bwrapP
 
   const [protectedDirectories, sensitiveFiles] = await Promise.all([
     existingProtectedDirectories(home),
-    sensitiveFilesForSandbox(options.cwd, home),
+    sensitiveFilesForInvocation(options.cwd, home),
   ]);
   for (const path of sensitiveFiles) args.push("--ro-bind", emptySecretFile, path);
   for (const path of protectedDirectories) args.push("--tmpfs", path);
@@ -202,6 +214,10 @@ export async function runSandboxedProcess(options: SandboxRunOptions): Promise<S
       else resolvePromise({ exitCode, stdout, stderr, outputLimitReached });
     });
   });
+}
+
+export function resetSandboxCaches(): void {
+  homeMaskCache.clear();
 }
 
 export function createSandboxedBashOperations(options: { home?: string; bwrapPath?: string } = {}): BashOperations {

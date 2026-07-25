@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "default": 1,
+      "type": "number",
+      "const": 1
+    },
+    "defaults": {
+      "default": {
+        "prMode": "draft"
+      },
+      "type": "object",
+      "properties": {
+        "prMode": {
+          "default": "draft",
+          "type": "string",
+          "enum": [
+            "prepare",
+            "draft",
+            "ready",
+            "off"
+          ]
+        }
+      },
+      "required": [
+        "prMode"
+      ],
+      "additionalProperties": false
+    },
+    "workflows": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "stages": {
+            "minItems": 1,
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "prompt"
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "prompt"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "command"
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "gated": {
+                      "default": false,
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "command",
+                    "gated"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "qa"
+                    },
+                    "focus": {
+                      "type": "string"
+                    },
+                    "maxAttempts": {
+                      "default": 3,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 25
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "maxAttempts"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "stress"
+                    },
+                    "profile": {
+                      "default": "auto",
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "profile"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "agent"
+                    },
+                    "agent": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "task": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxAttempts": {
+                      "default": 1,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 25
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "agent",
+                    "task",
+                    "maxAttempts"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "pr"
+                    },
+                    "mode": {
+                      "default": "draft",
+                      "type": "string",
+                      "enum": [
+                        "prepare",
+                        "draft",
+                        "ready",
+                        "off"
+                      ]
+                    },
+                    "when": {
+                      "default": "passed",
+                      "type": "string",
+                      "const": "passed"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "mode",
+                    "when"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "stages"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "stressProfiles": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "match": {
+            "default": {
+              "fileExtensions": []
+            },
+            "type": "object",
+            "properties": {
+              "cwdBasename": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fileExtensions": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "fileExtensions"
+            ],
+            "additionalProperties": false
+          },
+          "agent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "match",
+          "agent",
+          "task"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "version",
+    "defaults",
+    "workflows",
+    "stressProfiles"
+  ],
+  "additionalProperties": false
+}

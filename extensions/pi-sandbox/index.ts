@@ -1,9 +1,10 @@
 import { constants as fsConstants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access as fsAccess, mkdir, readFile, writeFile } from "node:fs/promises";
+import { extname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createBashTool, createGrepTool } from "@earendil-works/pi-coding-agent";
-import { HOST_EXECUTION_TOOLS, normalizeToolPath, protectedPathReason } from "./policy";
-import { createSandboxedBashOperations, runSandboxedProcess } from "./runner";
+import { createBashTool, createEditTool, createGrepTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
+import { allowedCanonicalPath, HOST_EXECUTION_TOOLS, normalizeToolPath, protectedPathReason } from "./policy";
+import { createSandboxedBashOperations, resetSandboxCaches, runSandboxedProcess } from "./runner";
 
 const STATE_ENTRY = "pi-sandbox-state";
 const FILE_TOOLS = new Set(["edit", "find", "grep", "ls", "read", "write"]);
@@ -21,7 +22,7 @@ function restoredState(entries: StateEntry[]): boolean {
     const entry = entries[index];
     if (entry?.customType === STATE_ENTRY && typeof entry.data?.enabled === "boolean") return entry.data.enabled;
   }
-  return true;
+  return false;
 }
 
 function updateStatus(ctx: any, enabled: boolean, bwrapAvailable: boolean): void {
@@ -40,6 +41,64 @@ function truncateOutput(output: string, maxLines: number): { text: string; trunc
   return { text, truncated };
 }
 
+function imageMimeType(path: string): string | undefined {
+  switch (extname(path).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    default:
+      return undefined;
+  }
+}
+
+function guardedReadOperations(cwd: string) {
+  return {
+    async access(path: string) {
+      await fsAccess(await allowedCanonicalPath(path, cwd), fsConstants.R_OK);
+    },
+    async readFile(path: string) {
+      return readFile(await allowedCanonicalPath(path, cwd));
+    },
+    async detectImageMimeType(path: string) {
+      const allowedPath = await allowedCanonicalPath(path, cwd);
+      return imageMimeType(allowedPath);
+    },
+  };
+}
+
+function guardedEditOperations(cwd: string) {
+  return {
+    async access(path: string) {
+      await fsAccess(await allowedCanonicalPath(path, cwd), fsConstants.R_OK | fsConstants.W_OK);
+    },
+    async readFile(path: string) {
+      return readFile(await allowedCanonicalPath(path, cwd));
+    },
+    async writeFile(path: string, content: string) {
+      await writeFile(await allowedCanonicalPath(path, cwd), content);
+    },
+  };
+}
+
+function guardedWriteOperations(cwd: string) {
+  return {
+    async mkdir(path: string) {
+      await mkdir(await allowedCanonicalPath(path, cwd), { recursive: true });
+    },
+    async writeFile(path: string, content: string) {
+      await writeFile(await allowedCanonicalPath(path, cwd), content);
+    },
+  };
+}
+
 function grepArguments(params: any): string[] {
   const args = ["--line-number", "--color=never", "--hidden"];
   if (params.ignoreCase) args.push("--ignore-case");
@@ -51,11 +110,41 @@ function grepArguments(params: any): string[] {
 }
 
 export default function piSandbox(pi: ExtensionAPI) {
-  let sandboxEnabled = true;
+  let sandboxEnabled = false;
   let bwrapAvailable = false;
   const initialCwd = process.cwd();
   const baseBash = createBashTool(initialCwd);
+  const baseEdit = createEditTool(initialCwd);
   const baseGrep = createGrepTool(initialCwd);
+  const baseRead = createReadTool(initialCwd);
+  const baseWrite = createWriteTool(initialCwd);
+
+  pi.registerTool({
+    ...baseRead,
+    async execute(id, params, signal, onUpdate, ctx) {
+      if (!sandboxEnabled) return createReadTool(ctx.cwd).execute(id, params, signal, onUpdate);
+      const tool = createReadTool(ctx.cwd, { operations: guardedReadOperations(ctx.cwd) });
+      return tool.execute(id, params, signal, onUpdate);
+    },
+  });
+
+  pi.registerTool({
+    ...baseWrite,
+    async execute(id, params, signal, onUpdate, ctx) {
+      if (!sandboxEnabled) return createWriteTool(ctx.cwd).execute(id, params, signal, onUpdate);
+      const tool = createWriteTool(ctx.cwd, { operations: guardedWriteOperations(ctx.cwd) });
+      return tool.execute(id, params, signal, onUpdate);
+    },
+  });
+
+  pi.registerTool({
+    ...baseEdit,
+    async execute(id, params, signal, onUpdate, ctx) {
+      if (!sandboxEnabled) return createEditTool(ctx.cwd).execute(id, params, signal, onUpdate);
+      const tool = createEditTool(ctx.cwd, { operations: guardedEditOperations(ctx.cwd) });
+      return tool.execute(id, params, signal, onUpdate);
+    },
+  });
 
   pi.registerTool({
     ...baseBash,
@@ -103,11 +192,12 @@ export default function piSandbox(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    resetSandboxCaches();
     const entries = ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries();
     sandboxEnabled = restoredState(entries as StateEntry[]);
     const bwrapPath = process.env.PI_BWRAP_PATH ?? "/usr/bin/bwrap";
     try {
-      await access(bwrapPath, fsConstants.X_OK);
+      await fsAccess(bwrapPath, fsConstants.X_OK);
       bwrapAvailable = true;
     } catch {
       bwrapAvailable = false;
@@ -155,16 +245,33 @@ export default function piSandbox(pi: ExtensionAPI) {
     };
   });
 
+  const setSandbox = (enabled: boolean, ctx: any) => {
+    sandboxEnabled = enabled;
+    pi.appendEntry(STATE_ENTRY, { enabled: sandboxEnabled });
+    updateStatus(ctx, sandboxEnabled, bwrapAvailable);
+    ctx.ui?.notify?.(
+      `Agent tool sandbox is ${sandboxEnabled ? "enabled" : "disabled"} for this session.`,
+      sandboxEnabled ? "info" : "warning",
+    );
+  };
+
+  pi.registerCommand("sandboxed", {
+    description: "Toggle OS sandboxing for agent-controlled tools in this session",
+    handler: async (_args, ctx) => setSandbox(!sandboxEnabled, ctx),
+  });
+
   pi.registerCommand("is_sandboxed", {
     description: "Show or set OS sandboxing for agent-controlled tools in this session (true|false)",
+    getArgumentCompletions: (prefix) => {
+      const values = ["true", "false", "status"];
+      const matches = values.filter((value) => value.startsWith(prefix.trim().toLowerCase()));
+      return matches.length ? matches.map((value) => ({ value, label: value })) : null;
+    },
     handler: async (args, ctx) => {
       const value = args.trim().toLowerCase();
-      if (value === "true" || value === "false") {
-        sandboxEnabled = value === "true";
-        pi.appendEntry(STATE_ENTRY, { enabled: sandboxEnabled });
-        updateStatus(ctx, sandboxEnabled, bwrapAvailable);
-      } else if (value !== "") {
-        ctx.ui?.notify?.("Usage: /is_sandboxed [true|false]", "warning");
+      if (value === "true" || value === "false") return setSandbox(value === "true", ctx);
+      if (value !== "" && value !== "status") {
+        ctx.ui?.notify?.("Usage: /is_sandboxed [true|false|status] (or /sandboxed to toggle)", "warning");
         return;
       }
       ctx.ui?.notify?.(

@@ -123,6 +123,22 @@ describe("plan-mode", () => {
     }
   });
 
+  it("notifies before showing an interactive planning question", async () => {
+    const pi = createMockPi();
+    planMode(pi);
+    const ctx = createMockContext();
+    ctx.ui.select.mockResolvedValue("Option A");
+
+    const result = await pi.tools
+      .get("plan_mode_question")
+      .execute("question-1", { question: "Which option?", options: ["Option A", "Option B"] }, undefined, undefined, ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Plan mode needs your input.", "info");
+    expect(ctx.ui.notify.mock.invocationCallOrder[0]).toBeLessThan(ctx.ui.select.mock.invocationCallOrder[0]);
+    expect(ctx.ui.select).toHaveBeenCalledWith("Which option?", ["Option A", "Option B", "Other / no preference"]);
+    expect(result.details.answer).toBe("Option A");
+  });
+
   it("extracts tagged plans and allows read-only planning commands", () => {
     expect(__planModeTest.extractProposedPlan("x<proposed_plan>\n# P\n</proposed_plan>")).toBe("# P");
     expect(__planModeTest.isSafePlanningCommand("supp -n tree -d 2 && rg foo")).toBe(true);
