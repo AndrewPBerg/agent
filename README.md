@@ -47,6 +47,10 @@ Set `PI_REAL_BIN` if the launcher cannot resolve Pi through a preserved `~/.loca
 
 `extensions/network-resume/` watches an idle TUI session after a transport-level HTTP or WebSocket failure. It polls NetworkManager's `nmcli -t -f CONNECTIVITY general`; only `full` is online, while a failed or unavailable probe is `unknown` and gets a bounded retry instead of waiting forever. The armed worker is persisted in the session and resumes after Pi restarts. Its mailbox follow-up asks the agent to continue from the last successful step without repeating tool side effects.
 
+## Session text browser
+
+`extensions/session-text/` provides a rendering-independent browser over canonical Pi session entries. Open it with `Space Space` or `/session-text`, use `v`/`V` plus `y` to copy selected source text, Enter to open a clean read-only document in the external editor, and `R` for explicit raw JSON. Bash rows copy commands without prompts or output; sole fenced blocks copy their exact body. Copies above 32 MiB require confirmation, and external documents are streamed to a temporary file that is removed after the editor exits.
+
 ## Gated loop workflows
 
 `extensions/loop/` provides `/lp`, a persistent gated workflow runner. The default `/lp qa-pr` workflow repeats `/qa` until clean, runs all matching stress profiles through the push-based subagent mailbox, then pushes the branch and creates a draft PR after the current diff fingerprint passes every gate.

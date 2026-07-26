@@ -29,6 +29,8 @@ describe("vim leader", () => {
     await pi.events.get("session_start")?.[0]({}, ctx);
 
     expect(terminalInput?.(" ")).toEqual({ consume: true });
+    expect(terminalInput?.(" ")).toEqual({ consume: true });
+    expect(terminalInput?.(" ")).toEqual({ consume: true });
     expect(terminalInput?.("m")).toEqual({ consume: true });
     expect(terminalInput?.(" ")).toEqual({ consume: true });
     expect(terminalInput?.("d")).toEqual({ consume: true });
@@ -39,6 +41,7 @@ describe("vim leader", () => {
     expect(terminalInput?.(" ")).toEqual({ consume: true });
     expect(terminalInput?.("u")).toEqual({ consume: true });
     expect(invoked).toEqual([
+      { sequence: " ", action: "session-text" },
       { sequence: "m", action: "mailbox" },
       { sequence: "d", action: "details" },
       { sequence: "y", action: "yosoi" },
@@ -46,6 +49,7 @@ describe("vim leader", () => {
       { sequence: "u", action: "usage" },
     ]);
     expect(LEADER_MAPPINGS).toEqual({
+      " ": "session-text",
       f: "flameframe",
       m: "mailbox",
       r: "reload",
@@ -53,6 +57,38 @@ describe("vim leader", () => {
       y: "yosoi",
       d: "details",
     });
+  });
+
+  it("only starts leader sequences in normal or visual Vim modes", async () => {
+    const pi = createMockPi();
+    const invoked: string[] = [];
+    pi.events.on(VIM_LEADER_EVENT, (data) => invoked.push((data as { sequence: string }).sequence));
+    let terminalInput: ((data: string) => { consume?: boolean; data?: string } | undefined) | undefined;
+    const ctx = createMockContext({
+      ui: {
+        onTerminalInput: vi.fn((handler) => {
+          terminalInput = handler;
+          return vi.fn();
+        }),
+        getEditorText: vi.fn(() => ""),
+      },
+    });
+
+    vimLeader(pi);
+    await pi.events.get("session_start")?.[0]({}, ctx);
+
+    pi.events.emit("vim-mode:update", { mode: "insert" });
+    expect(terminalInput?.(" ")).toBeUndefined();
+    expect(terminalInput?.("m")).toBeUndefined();
+
+    pi.events.emit("vim-mode:update", { mode: "normal" });
+    expect(terminalInput?.(" ")).toEqual({ consume: true });
+    expect(terminalInput?.("m")).toEqual({ consume: true });
+
+    pi.events.emit("vim-mode:update", { mode: "visual" });
+    expect(terminalInput?.(" ")).toEqual({ consume: true });
+    expect(terminalInput?.("m")).toEqual({ consume: true });
+    expect(invoked).toEqual(["m", "m"]);
   });
 
   it("ignores Kitty key releases between leader and command", async () => {

@@ -5,7 +5,10 @@ import { VIM_LEADER_EVENT } from "./protocol";
 
 const LEADER = " ";
 const LEADER_TIMEOUT_MS = 500;
+const VIM_MODE_EVENT = "vim-mode:update";
 const SEQUENCES = Object.keys(LEADER_MAPPINGS) as Array<keyof typeof LEADER_MAPPINGS>;
+
+type VimMode = "insert" | "normal" | "visual" | "visualLine" | "visualBlock";
 
 type VimLeaderDependencies = {
   submitEditor: () => void;
@@ -24,6 +27,12 @@ export function createVimLeader(pi: ExtensionAPI, dependencies: Partial<VimLeade
   let sequence: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let unsubscribeTerminal: (() => void) | undefined;
+  let vimMode: VimMode | undefined;
+
+  const unsubscribeVimMode = pi.events.on(VIM_MODE_EVENT, (data) => {
+    vimMode = (data as { mode?: VimMode }).mode;
+    if (vimMode === "insert") clear();
+  });
 
   const clear = () => {
     sequence = undefined;
@@ -41,7 +50,7 @@ export function createVimLeader(pi: ExtensionAPI, dependencies: Partial<VimLeade
       if (isKeyRelease(data)) return undefined;
 
       if (sequence === undefined) {
-        if (!isKey(data, "space", LEADER) || ctx.ui.getEditorText().length !== 0) return undefined;
+        if (vimMode === "insert" || !isKey(data, "space", LEADER) || ctx.ui.getEditorText().length !== 0) return undefined;
         sequence = "";
         timer = setTimeout(clear, LEADER_TIMEOUT_MS);
         return { consume: true };
@@ -67,8 +76,10 @@ export function createVimLeader(pi: ExtensionAPI, dependencies: Partial<VimLeade
 
   pi.on("session_shutdown", () => {
     clear();
+    vimMode = undefined;
     unsubscribeTerminal?.();
     unsubscribeTerminal = undefined;
+    unsubscribeVimMode();
   });
 }
 

@@ -58,7 +58,10 @@ export function wrapTextWithAnsi(value: string, width: number) {
   return lines;
 }
 
-export function matchesKey() {
+export function matchesKey(data: string, key: string) {
+  if (data === key) return true;
+  if (key === "enter" || key === "return") return data === "\r" || data === "\n";
+  if (key === "escape") return data === "\u001b";
   return false;
 }
 

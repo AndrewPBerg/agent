@@ -1,4 +1,5 @@
 export const LEADER_MAPPINGS = {
+  " ": "session-text",
   f: "flameframe",
   m: "mailbox",
   r: "reload",
