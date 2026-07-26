@@ -377,24 +377,21 @@ function jsonEscape(code: number): string | undefined {
   return undefined;
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: JSON strings must escape control characters and lone surrogates.
+const JSON_STRING_ESCAPE = /[\u0000-\u001f"\\]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
 function* jsonStringChunks(value: string): Generator<string> {
   yield '"';
-  let buffer = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    const next = value.charCodeAt(index + 1);
-    if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
-      buffer += value[index] + value[index + 1];
-      index += 1;
-    } else {
-      buffer += jsonEscape(code) ?? value[index];
-    }
-    if (buffer.length >= DOCUMENT_CHUNK_CODE_UNITS) {
-      yield* chunkText(buffer);
-      buffer = "";
-    }
+  let start = 0;
+  while (start < value.length) {
+    let end = Math.min(value.length, start + DOCUMENT_CHUNK_CODE_UNITS);
+    const before = value.charCodeAt(end - 1);
+    const after = value.charCodeAt(end);
+    if (end < value.length && before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
+    const escaped = value.slice(start, end).replace(JSON_STRING_ESCAPE, (character) => jsonEscape(character.charCodeAt(0)) ?? character);
+    yield* chunkText(escaped);
+    start = end;
   }
-  if (buffer) yield buffer;
   yield '"';
 }
 

@@ -70,7 +70,6 @@ function stringifyTextContent(content: unknown, options: { compact?: boolean } =
     .map((part) => {
       if (!isRecord(part)) return "";
       if (part.type === "text" && typeof part.text === "string") return part.text;
-      if (part.type === "thinking" && typeof part.thinking === "string") return compact ? "[thinking]" : part.thinking;
       if (part.type === "thinking") return "[thinking]";
       if (part.type === "image") return "[image]";
       if (part.type === "toolCall" && typeof part.name === "string") {
@@ -204,8 +203,12 @@ export function flattenSessionTreeRows(
   leafId: string | null,
 ): VimSessionTreeRow[] {
   const rows: VimSessionTreeRow[] = [];
+  const stack = [...roots].reverse().map((node) => ({ node, depth: 0, justBranched: roots.length > 1 }));
 
-  const visit = (node: VimSessionTreeNode, depth: number, justBranched: boolean) => {
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame) continue;
+    const { node, depth, justBranched } = frame;
     rows.push({
       id: node.entry.id,
       entry: node.entry,
@@ -218,10 +221,11 @@ export function flattenSessionTreeRows(
 
     const hasMultipleChildren = node.children.length > 1;
     const childDepth = hasMultipleChildren ? depth + 1 : justBranched && depth > 0 ? depth + 1 : depth;
-    for (const child of node.children) visit(child, childDepth, hasMultipleChildren);
-  };
-
-  for (const root of roots) visit(root, 0, roots.length > 1);
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      const child = node.children[index];
+      if (child) stack.push({ node: child, depth: childDepth, justBranched: hasMultipleChildren });
+    }
+  }
   return rows;
 }
 
@@ -503,6 +507,8 @@ export class VimSessionTreeComponent implements Component {
     }
 
     if (data === "/") {
+      this.mode = "normal";
+      this.visualAnchor = undefined;
       this.searchActive = true;
       this.countBuffer = "";
       this.pendingG = false;
@@ -710,12 +716,17 @@ export class VimSessionTreeComponent implements Component {
         return;
       }
 
-      await this.copyText(sessionEntriesClipboardText(entries));
+      const text = sessionEntriesClipboardText(entries);
+      if (!text) {
+        this.statusMessage = "No copyable text in selection";
+        return;
+      }
+      await this.copyText(text);
       this.statusMessage = `${entries.length} entr${entries.length === 1 ? "y" : "ies"} yanked`;
       this.mode = "normal";
       this.visualAnchor = undefined;
-    } catch {
-      this.statusMessage = "Clipboard copy failed";
+    } catch (error) {
+      this.statusMessage = `Clipboard copy failed: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       this.yankInProgress = false;
       this.tui.requestRender();
@@ -782,6 +793,8 @@ export class VimSessionTreeComponent implements Component {
 
   private setFilter(filter: TreeFilterState): void {
     this.filter = filter;
+    this.mode = "normal";
+    this.visualAnchor = undefined;
     this.refreshVisibleRows();
     this.pendingG = false;
     this.countBuffer = "";
@@ -977,7 +990,12 @@ export async function openSessionTextBrowser(ctx: ExtensionContext): Promise<voi
       );
       if (!confirmed) continue;
       try {
-        await copySessionText(sessionEntriesClipboardText(entries));
+        const text = sessionEntriesClipboardText(entries);
+        if (!text) {
+          ctx.ui.notify("No copyable text in selection", "warning");
+          continue;
+        }
+        await copySessionText(text);
         initialState = { ...action.state, mode: "normal", visualAnchorId: undefined };
         ctx.ui.notify(`${entries.length} entr${entries.length === 1 ? "y" : "ies"} yanked`, "info");
       } catch (error) {

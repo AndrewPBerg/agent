@@ -72,6 +72,16 @@ describe("session text browser", () => {
     ]);
   });
 
+  it("flattens long linear sessions without overflowing the call stack", () => {
+    let root = treeNode("entry-19999");
+    for (let index = 19_998; index >= 0; index -= 1) root = treeNode(`entry-${index}`, [root]);
+
+    const flattened = flattenSessionTreeRows([root], new Set(), "entry-19999");
+
+    expect(flattened).toHaveLength(20_000);
+    expect(flattened[19_999]?.id).toBe("entry-19999");
+  });
+
   it("does not emit stored terminal controls while rendering rows", () => {
     const unsafe = messageRow("unsafe-\u001b[31mid", { role: "user", content: "\u001b]52;c;payload\u0007safe text" });
     unsafe.summary = "user: \u001b]52;c;payload\u0007safe text";
@@ -118,6 +128,19 @@ describe("session text browser", () => {
     expect(sessionEntryPreview(literalValue, "(a+)+$")).toContain("(a+)+$");
   });
 
+  it("does not expose thinking text through search previews", () => {
+    const value = messageRow("thinking", {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "private-reasoning-token" },
+        { type: "text", text: "public answer" },
+      ],
+    }).entry;
+
+    expect(sessionEntrySearchText(value)).not.toContain("private-reasoning-token");
+    expect(sessionEntrySearchText(value)).toContain("[thinking]");
+  });
+
   it("searches hidden tool arguments and returns source previews", () => {
     const value = messageRow("assistant-read", {
       role: "assistant",
@@ -129,6 +152,32 @@ describe("session text browser", () => {
 
     expect(sessionEntrySearchText(value)).toContain("src/target.ts");
     expect(sessionEntryPreview(value, "target")).toContain("target.ts");
+  });
+
+  it("clears visual selection when filters change", async () => {
+    const copied: string[] = [];
+    const component = createComponent(
+      () => {},
+      [
+        messageRow("user-1", { role: "user", content: "first" }),
+        messageRow("file", {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "tc-read", name: "read", arguments: { path: "README.md" } }],
+        }),
+        messageRow("user-2", { role: "user", content: "second" }),
+      ],
+      async (text) => {
+        copied.push(text);
+      },
+    );
+
+    component.handleInput("V");
+    component.handleInput("j");
+    component.handleInput("f");
+    component.handleInput("y");
+    await Promise.resolve();
+
+    expect(copied).toEqual([]);
   });
 
   it("yanks selected canonical text instead of diagnostic JSON", async () => {
@@ -149,6 +198,17 @@ describe("session text browser", () => {
 
     expect(copied).toEqual(["row 0\nrow 1\nrow 2"]);
     expect(component.render(120).join("\n")).toContain("3 entries yanked");
+  });
+
+  it("does not invoke the clipboard for control-only selections", async () => {
+    const copyText = vi.fn(async () => {});
+    const component = createComponent(() => {}, [messageRow("control", { role: "user", content: "\u001b]52;c;payload\u0007" })], copyText);
+
+    component.handleInput("v");
+    component.handleInput("y");
+    await vi.waitFor(() => expect(component.render(120).join("\n")).toContain("No copyable text"));
+
+    expect(copyText).not.toHaveBeenCalled();
   });
 
   it("closes the overlay before requesting confirmation for oversized copies", async () => {
