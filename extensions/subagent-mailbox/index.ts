@@ -6,16 +6,19 @@ import { basename, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parse as parseYaml } from "yaml";
+import { publishInlineMode, smoothBreathingFrames } from "../lib/inline-modes";
 import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "../vim-leader/protocol";
 import { showSubagentInspector } from "./inspector";
 import {
   MAILBOX_CANCEL_RUN_EVENT,
+  MAILBOX_EXTERNAL_JOB_EVENT,
   MAILBOX_SPAWN_ACCEPTED_EVENT,
   MAILBOX_SPAWN_REJECTED_EVENT,
   MAILBOX_SPAWN_REQUEST_EVENT,
   MAILBOX_TERMINAL_EVENT,
   type MailboxCancelRun,
   type MailboxCorrelation,
+  type MailboxExternalJob,
   type MailboxSpawnRequest,
 } from "./protocol";
 
@@ -26,6 +29,7 @@ const HARD_MAX_CONCURRENT_AGENT_CAP = 32;
 const MAX_SUBAGENT_DEPTH = 2;
 const MAX_MAILBOX_OUTPUT_CHARS = 20_000;
 const MAX_STDERR_CHARS = 4_000;
+const MAILBOX_BREATHING_FRAMES = smoothBreathingFrames("", [59, 55, 92], [157, 120, 255]);
 
 type AgentStatus = "launching" | "running" | "completed" | "failed" | "cancelled";
 
@@ -48,6 +52,7 @@ type Usage = {
 
 export type AgentJob = {
   id: string;
+  kind?: "agent" | "bash";
   agent: string;
   task: string;
   cwd: string;
@@ -171,6 +176,7 @@ const defaultDependencies: RuntimeDependencies = {
 export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<RuntimeDependencies> = {}) {
   const deps = { ...defaultDependencies, ...dependencies };
   const jobs = new Map<string, AgentJob>();
+  const externalJobs = new Map<string, AgentJob>();
   const children = new Map<string, ChildProcess>();
   const cancelRequests = new Map<string, () => void>();
   const suppressedCompletions = new Set<string>();
@@ -183,20 +189,52 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
   let inspectorOpen = false;
 
   function runningCount(): number {
-    return [...jobs.values()].filter((job) => job.status === "running").length;
+    return [...jobs.values()].filter((job) => job.status === "running" && (job.kind ?? "agent") === "agent").length;
   }
 
   function launchingCount(): number {
-    return [...jobs.values()].filter((job) => job.status === "launching").length;
+    return [...jobs.values()].filter((job) => job.status === "launching" && (job.kind ?? "agent") === "agent").length;
   }
 
   function activeCount(): number {
     return runningCount() + launchingCount();
   }
 
+  function updateMailboxInlineMode() {
+    const mailboxJobs = [...jobs.values(), ...externalJobs.values()];
+    const active = mailboxJobs.filter((job) => job.status === "launching" || job.status === "running");
+    const latest = mailboxJobs.sort((left, right) => right.startedAt - left.startedAt)[0];
+    if (active.length > 0) {
+      publishInlineMode(pi, "mailbox", {
+        label: "MB",
+        detail: active.length > 1 ? String(active.length) : undefined,
+        tone: "accent",
+        frames: MAILBOX_BREATHING_FRAMES,
+        intervalMs: 16,
+        priority: 300,
+      });
+      return;
+    }
+    const failed = latest?.status === "failed" || latest?.status === "cancelled";
+    publishInlineMode(
+      pi,
+      "mailbox",
+      mailboxJobs.length > 0
+        ? {
+            label: "MB",
+            detail: failed ? `${mailboxJobs.length} ✗` : String(mailboxJobs.length),
+            icon: "",
+            tone: failed ? "error" : "success",
+            priority: 300,
+          }
+        : undefined,
+    );
+  }
+
   function updateStatus(ctx: ExtensionContext) {
     const count = activeCount();
     ctx.ui.setStatus(CUSTOM_TYPE, count ? `agents:${count}/${sessionCap}` : undefined);
+    updateMailboxInlineMode();
   }
 
   function updateInspectors() {
@@ -274,6 +312,7 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
     const now = deps.now();
     const job: AgentJob = {
       id: `agent-${now}-${nextJob++}`,
+      kind: "agent",
       agent,
       task,
       cwd,
@@ -526,6 +565,13 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
         cancelRequests.get(job.id)?.();
     }
   });
+  const unsubscribeExternalJobs = pi.events.on(MAILBOX_EXTERNAL_JOB_EVENT, (data) => {
+    const snapshot = (data as MailboxExternalJob | undefined)?.job;
+    if (!snapshot || snapshot.kind !== "bash") return;
+    externalJobs.set(snapshot.id, { ...snapshot, usage: emptyUsage() });
+    updateMailboxInlineMode();
+    updateInspectors();
+  });
 
   pi.registerTool({
     name: "spawn_agent",
@@ -642,7 +688,7 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
     try {
       await showSubagentInspector(
         ctx,
-        () => jobs.values(),
+        () => [...jobs.values(), ...externalJobs.values()],
         () => sessionCap,
         subscribeInspector,
       );
@@ -660,7 +706,12 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
   });
 
   pi.registerCommand("subagents", {
-    description: "Inspect background subagents and their live run status",
+    description: "Inspect background mailbox jobs and their live run status",
+    handler: async (_args, ctx) => showInspector(ctx),
+  });
+
+  pi.registerCommand("mailbox", {
+    description: "Inspect background mailbox jobs and their live run status",
     handler: async (_args, ctx) => showInspector(ctx),
   });
 
@@ -695,6 +746,7 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
     sessionCtx = undefined;
     unsubscribeSpawnRequests();
     unsubscribeCancelRuns();
+    unsubscribeExternalJobs();
     unsubscribeLeader();
     inspectorOpen = false;
     const now = deps.now();
@@ -711,7 +763,9 @@ export function createSubagentMailbox(pi: ExtensionAPI, dependencies: Partial<Ru
     children.clear();
     cancelRequests.clear();
     inspectorListeners.clear();
+    externalJobs.clear();
     ctx.ui.setStatus(CUSTOM_TYPE, undefined);
+    publishInlineMode(pi, "mailbox", undefined);
   });
 
   return { jobs, getSessionCap: () => sessionCap };

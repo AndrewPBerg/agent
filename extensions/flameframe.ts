@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Image, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { publishInlineMode, smoothBreathingFrames } from "./lib/inline-modes";
 import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "./vim-leader/protocol";
 
 const PROCESS_TOOL_NAME = "flameframe_process";
@@ -14,6 +15,9 @@ const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const BROWSER_PREVIEW_RESERVED_ROWS = 26;
 const DETAIL_TRANSCRIPT_VISIBLE_LINES = 12;
 const CLIPBOARD_TIMEOUT_MS = 2_000;
+const FLAMEFRAME_TOOL_PREFIX = "flameframe_";
+const FLAMEFRAME_ORANGE = [249, 115, 22] as const;
+const FLAMEFRAME_BREATHING_FRAMES = smoothBreathingFrames("", [154, 52, 18], FLAMEFRAME_ORANGE);
 
 type Manifest = {
   source_input?: unknown;
@@ -55,6 +59,26 @@ export default function (pi: ExtensionAPI) {
   let sessionPacks: SessionPack[] = [];
   let sessionCtx: ExtensionContext | undefined;
   let browserOpen = false;
+  const activeToolCalls = new Set<string>();
+
+  const syncInlineStatus = () => {
+    const active = activeToolCalls.size > 0;
+    const processed = sessionPacks.length;
+    publishInlineMode(
+      pi,
+      "flameframe",
+      active || processed > 0
+        ? {
+            label: "FF",
+            detail: active ? "processing" : String(processed),
+            tone: "warning",
+            frames: active ? FLAMEFRAME_BREATHING_FRAMES : [{ icon: "", color: FLAMEFRAME_ORANGE }],
+            intervalMs: 60,
+            priority: 110,
+          }
+        : undefined,
+    );
+  };
 
   const openBrowser = async (ctx: ExtensionContext) => {
     if (browserOpen) return;
@@ -74,32 +98,10 @@ export default function (pi: ExtensionAPI) {
     );
   });
 
-  const updateShelf = (ctx: ExtensionContext) => {
-    if (ctx.mode !== "tui") return;
-    if (sessionPacks.length === 0) {
-      ctx.ui.setWidget("flameframe-session", undefined);
-      return;
-    }
-
-    const latest = sessionPacks.at(-1)!;
-    const frames = sessionPacks.reduce((total, pack) => total + pack.frames.length, 0);
-    ctx.ui.setWidget("flameframe-session", (_tui, theme) => ({
-      invalidate() {},
-      render(width: number) {
-        const label = ` FlameFrame · this session: ${sessionPacks.length} packs · ${frames} frames · latest: ${packLabel(latest)} · /flameframe-browser `;
-        return [truncateToWidth(theme.fg("accent", label), width)];
-      },
-    }));
-  };
-
-  const addPack = (pack: SessionPack, ctx: ExtensionContext) => {
-    sessionPacks = [...sessionPacks.filter((item) => item.packPath !== pack.packPath), pack];
-    updateShelf(ctx);
-  };
-
-  const rememberPack = (pack: SessionPack, ctx: ExtensionContext) => {
+  const rememberPack = (pack: SessionPack) => {
     const alreadyRegistered = sessionPacks.some((item) => item.packPath === pack.packPath);
-    addPack(pack, ctx);
+    sessionPacks = [...sessionPacks.filter((item) => item.packPath !== pack.packPath), pack];
+    syncInlineStatus();
     if (!alreadyRegistered) {
       pi.appendEntry<FlameFrameDetails>(CUSTOM_ENTRY_TYPE, {
         version: SESSION_DETAILS_VERSION,
@@ -110,14 +112,30 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     sessionCtx = ctx;
+    ctx.ui.setStatus("flameframe", undefined);
     sessionPacks = packsFromSession(ctx);
-    updateShelf(ctx);
+    syncInlineStatus();
   });
 
   pi.on("session_shutdown", () => {
     unsubscribeLeader();
+    activeToolCalls.clear();
+    publishInlineMode(pi, "flameframe", undefined);
+    sessionCtx?.ui.setStatus("flameframe", undefined);
     sessionCtx = undefined;
     browserOpen = false;
+  });
+
+  pi.on("tool_execution_start", (event) => {
+    if (!event.toolName.startsWith(FLAMEFRAME_TOOL_PREFIX)) return;
+    activeToolCalls.add(event.toolCallId);
+    syncInlineStatus();
+  });
+
+  pi.on("tool_execution_end", (event) => {
+    if (!event.toolName.startsWith(FLAMEFRAME_TOOL_PREFIX)) return;
+    activeToolCalls.delete(event.toolCallId);
+    syncInlineStatus();
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -125,7 +143,7 @@ export default function (pi: ExtensionAPI) {
     const workDir = workDirFromInput(event.input);
     if (!workDir) return;
     try {
-      rememberPack(await loadPack(workDir, ctx.cwd), ctx);
+      rememberPack(await loadPack(workDir, ctx.cwd));
     } catch (error) {
       ctx.ui.notify(`FlameFrame completed but its evidence pack could not be added: ${errorMessage(error)}`, "warning");
     }
@@ -134,7 +152,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("flameframe-browser", {
     description: "Browse FlameFrame evidence packs registered in this session, or add one explicitly.",
     handler: async (args, ctx) => {
-      if (args.trim()) rememberPack(await loadPack(args.trim(), ctx.cwd), ctx);
+      if (args.trim()) rememberPack(await loadPack(args.trim(), ctx.cwd));
       await openBrowser(ctx);
     },
   });

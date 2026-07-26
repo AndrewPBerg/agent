@@ -2,6 +2,7 @@ export const LEADER_MAPPINGS = {
   f: "flameframe",
   m: "mailbox",
   r: "reload",
+  u: "usage",
   y: "yosoi",
   d: "details",
 } as const;

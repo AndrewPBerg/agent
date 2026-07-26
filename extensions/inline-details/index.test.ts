@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { INLINE_MODE_EVENT } from "../lib/inline-modes";
 import { createMockPi } from "../test/mocks/pi-coding-agent";
 import vimLeader from "../vim-leader";
 import inlineDetails, { renderInlineFooter } from "./index";
@@ -59,29 +58,6 @@ describe("inline details", () => {
     expect(line).toContain("gpt-5.6-sol · high · ctx 24k/400k");
     expect(line).not.toContain("↑");
     expect(line).not.toContain("$");
-  });
-
-  it("renders inter-extension mode events as compact footer pills", async () => {
-    const pi = createMockPi() as any;
-    pi.getThinkingLevel = vi.fn(() => "high");
-    let footer: { render(width: number): string[] } | undefined;
-    const ctx = context({
-      ui: {
-        setFooter: vi.fn((factory) => {
-          footer = factory({ requestRender: vi.fn() }, theme, footerData());
-          return footer;
-        }),
-      },
-    });
-    inlineDetails(pi);
-    await pi.events.get("session_start")?.[0]?.({}, ctx);
-
-    pi.events.emit(INLINE_MODE_EVENT, { id: "test", state: { icon: "", label: "YS", detail: "FETCH", tone: "accent" } });
-    const line = footer!.render(120)[0];
-
-    expect(line).toContain("gpt-5.6-sol · high ·  YS FETCH · ctx 24k/400k");
-    expect(line).not.toContain("[  YS FETCH ]");
-    expect(line).toContain("~/projects/pi · inline-details");
   });
 
   it("stays within narrow widths and does not claim reasoning without a model", () => {

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { INLINE_MODE_EVENT } from "../lib/inline-modes";
 import {
   MAILBOX_CANCEL_RUN_EVENT,
   MAILBOX_SPAWN_REQUEST_EVENT,
@@ -134,6 +135,27 @@ describe("loop workflow engine", () => {
     engine.report({ status: "clean", summary: "clean on rerun", evidence: ["pytest focused"] });
     await engine.onAgentSettled(ctx);
     expect(engine.currentRun()).toMatchObject({ status: "completed", currentStage: 1 });
+  });
+
+  it("publishes a green LP marker with the active attempt count", async () => {
+    const { ctx, engine, pi } = setupEngine();
+    const updates: any[] = [];
+    pi.events.on(INLINE_MODE_EVENT, (update) => updates.push(update));
+
+    await engine.start({ stages: [{ type: "qa", maxAttempts: 2 }] }, ctx);
+    expect(updates.at(-1)).toMatchObject({
+      id: "loop",
+      state: { label: "LP", detail: "1/2", tone: "success", intervalMs: 16, priority: 400 },
+    });
+    expect(updates.at(-1).state.frames[0].icon).toBe("");
+
+    engine.report({ status: "fixed", summary: "fixed edge case", evidence: ["focused test"] });
+    await engine.onAgentSettled(ctx);
+    expect(updates.at(-1)).toMatchObject({ id: "loop", state: { detail: "2/2" } });
+
+    engine.report({ status: "clean", summary: "clean rerun", evidence: ["focused test"] });
+    await engine.onAgentSettled(ctx);
+    expect(updates.at(-1)).toEqual({ id: "loop", state: undefined });
   });
 
   it("blocks a gated stage that settles without a typed report", async () => {

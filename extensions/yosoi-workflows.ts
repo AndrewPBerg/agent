@@ -3,11 +3,12 @@ import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { publishInlineMode } from "./lib/inline-modes";
+import { publishInlineMode, smoothBreathingFrames } from "./lib/inline-modes";
 import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "./vim-leader/protocol";
 
 const workflows = ["help", "search", "fetch", "crawl", "research"] as const;
 const commands = ["help", "search", "fetch", "crawl", "research", "show", "clear", "older", "newer", "latest"] as const;
+const YOSOI_BREATHING_FRAMES = smoothBreathingFrames("", [70, 78, 92], [74, 210, 255]);
 type Workflow = (typeof workflows)[number];
 type YosoiCommand = (typeof commands)[number];
 
@@ -349,19 +350,12 @@ function syncInlineMode(pi: ExtensionAPI): void {
   }
 
   if (active.size > 0) {
-    const current = [...active.values()].at(-1);
-    const workflow = current?.workflow.toUpperCase() ?? "RUNNING";
-    const detail = active.size > 1 ? `${workflow} +${active.size - 1}` : workflow;
     publishInlineMode(pi, "yosoi", {
       label: "YS",
-      detail,
-      frames: [
-        { icon: "", tone: "dim" },
-        { icon: "", tone: "muted" },
-        { icon: "", tone: "accent" },
-        { icon: "", tone: "muted" },
-      ],
-      intervalMs: 140,
+      detail: active.size > 1 ? String(active.size) : undefined,
+      tone: "accent",
+      frames: YOSOI_BREATHING_FRAMES,
+      intervalMs: 16,
       priority: 100,
     });
     return;

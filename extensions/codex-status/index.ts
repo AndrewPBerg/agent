@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { VIM_LEADER_EVENT, type VimLeaderInvocation } from "../vim-leader/protocol";
 
 type CodexAuth = {
   auth_mode?: string;
@@ -57,8 +58,7 @@ type CodexUsage = {
 
 const WIDGET_ID = "codex-status";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const AUTO_CLOSE_MS = 10_000;
-let closeTimer: ReturnType<typeof setTimeout> | undefined;
+const AUTO_CLOSE_MS = 7_000;
 
 function authPath(): string {
   return join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
@@ -152,7 +152,7 @@ function fmtLimit(name: string, limit?: RateLimit | null): string[] {
 
 function buildLines(data: CodexUsage): string[] {
   const lines = [
-    `Codex status (${data.plan_type || "unknown"}) · ${redactEmail(data.email)} · closes in 10s`,
+    `Codex status (${data.plan_type || "unknown"}) · ${redactEmail(data.email)} · closes in 7s`,
     ...fmtLimit("Codex", data.rate_limit),
   ];
 
@@ -203,41 +203,69 @@ class CodexStatusWidget {
   invalidate() {}
 }
 
-function clearStatus(ui: ExtensionCommandContext["ui"]) {
-  ui.setWidget(WIDGET_ID, undefined);
-  if (closeTimer) {
-    clearTimeout(closeTimer);
-    closeTimer = undefined;
-  }
-}
-
-function armAutoClose(ctx: ExtensionCommandContext) {
-  if (closeTimer) clearTimeout(closeTimer);
-  closeTimer = setTimeout(() => clearStatus(ctx.ui), AUTO_CLOSE_MS);
-}
-
-async function showCodexStatus(_args: string, ctx: ExtensionCommandContext) {
-  const lines = buildLines(await fetchUsage());
-  if (ctx.hasUI) {
-    ctx.ui.setWidget(WIDGET_ID, () => new CodexStatusWidget(lines), { placement: "aboveEditor" });
-    armAutoClose(ctx);
-  } else {
-    console.log(lines.join("\n"));
-  }
-}
-
 export default function (pi: ExtensionAPI) {
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  let visible = false;
+  let requestGeneration = 0;
+  let sessionCtx: ExtensionContext | undefined;
+
+  const clearStatus = (ctx: ExtensionContext) => {
+    visible = false;
+    requestGeneration += 1;
+    ctx.ui.setWidget(WIDGET_ID, undefined);
+    if (closeTimer) clearTimeout(closeTimer);
+    closeTimer = undefined;
+  };
+
+  const toggleCodexStatus = async (_args: string, ctx: ExtensionContext) => {
+    if (visible) {
+      clearStatus(ctx);
+      return;
+    }
+
+    visible = true;
+    const generation = ++requestGeneration;
+    try {
+      const lines = buildLines(await fetchUsage());
+      if (generation !== requestGeneration || !visible) return;
+      if (ctx.hasUI) {
+        ctx.ui.setWidget(WIDGET_ID, () => new CodexStatusWidget(lines), { placement: "aboveEditor" });
+        closeTimer = setTimeout(() => clearStatus(ctx), AUTO_CLOSE_MS);
+      } else {
+        visible = false;
+        console.log(lines.join("\n"));
+      }
+    } catch (error) {
+      if (generation === requestGeneration) visible = false;
+      throw error;
+    }
+  };
+
+  pi.on("session_start", (_event, ctx) => {
+    sessionCtx = ctx;
+  });
+
+  const unsubscribeLeader = pi.events.on(VIM_LEADER_EVENT, (data) => {
+    const invocation = data as VimLeaderInvocation;
+    if (invocation?.action !== "usage" || !sessionCtx) return;
+    void toggleCodexStatus("", sessionCtx).catch((error) =>
+      sessionCtx?.ui.notify(`Could not show usage: ${error instanceof Error ? error.message : String(error)}`, "error"),
+    );
+  });
+
   pi.on("session_shutdown", (_event, ctx) => {
-    clearStatus(ctx.ui);
+    sessionCtx = undefined;
+    unsubscribeLeader();
+    clearStatus(ctx);
   });
 
   pi.registerCommand("status", {
-    description: "Show Codex subscription usage and remaining rate limits",
-    handler: showCodexStatus,
+    description: "Toggle Codex subscription usage and remaining rate limits",
+    handler: toggleCodexStatus,
   });
 
   pi.registerCommand("usage", {
-    description: "Show Codex subscription usage and remaining rate limits",
-    handler: showCodexStatus,
+    description: "Toggle Codex subscription usage and remaining rate limits",
+    handler: toggleCodexStatus,
   });
 }

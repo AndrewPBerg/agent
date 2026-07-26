@@ -86,7 +86,11 @@ export class SubagentInspector {
       const clipped = truncateToWidth(value, innerWidth, "…");
       return border("│") + clipped + " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped))) + border("│");
     };
-    const title = truncateToWidth(` Mailbox monitor · ${running} active · ${launching} pending · cap ${this.getCap()} `, innerWidth, "");
+    const title = truncateToWidth(
+      ` Mailbox monitor · ${running} active · ${launching} pending · agent cap ${this.getCap()} `,
+      innerWidth,
+      "",
+    );
     const titleFill = "─".repeat(Math.max(0, innerWidth - visibleWidth(title)));
     const lines = [border("╭") + this.theme.fg("accent", title) + border(`${titleFill}╮`)];
 
@@ -114,14 +118,17 @@ export class SubagentInspector {
 
     lines.push(border("├") + border("─".repeat(innerWidth)) + border("┤"));
     if (selected) {
-      lines.push(row(` Agent: ${this.theme.fg("accent", selected.agent)}  Status: ${selected.status}`));
-      lines.push(row(` Task: ${oneLine(selected.task)}`));
+      const isBash = selected.kind === "bash";
+      lines.push(row(` ${isBash ? "Kind" : "Agent"}: ${this.theme.fg("accent", selected.agent)}  Status: ${selected.status}`));
+      lines.push(row(` ${isBash ? "Command" : "Task"}: ${oneLine(selected.task)}`));
       lines.push(row(` Cwd: ${selected.cwd}`));
-      lines.push(
-        row(
-          ` Usage: ${selected.usage.turns} turns · ${selected.usage.input} in · ${selected.usage.output} out · $${selected.usage.cost.toFixed(4)}`,
-        ),
-      );
+      if (!isBash) {
+        lines.push(
+          row(
+            ` Usage: ${selected.usage.turns} turns · ${selected.usage.input} in · ${selected.usage.output} out · $${selected.usage.cost.toFixed(4)}`,
+          ),
+        );
+      }
       if (selected.error) lines.push(row(` Error: ${this.theme.fg("error", oneLine(selected.error))}`));
       else if (selected.output) lines.push(row(` Result: ${oneLine(selected.output)}`));
     } else {
@@ -149,7 +156,7 @@ export async function showSubagentInspector(
   subscribe: InspectorSubscription,
 ): Promise<void> {
   if (!ctx.hasUI) {
-    ctx.ui.notify("Subagent inspector requires interactive mode.", "warning");
+    ctx.ui.notify("Mailbox inspector requires interactive mode.", "warning");
     return;
   }
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new SubagentInspector(tui, theme, getJobs, getCap, subscribe, done), {

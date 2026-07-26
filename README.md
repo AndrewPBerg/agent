@@ -32,6 +32,8 @@ pnpm install --frozen-lockfile
 
 New sessions default to `false`; an explicit toggle is restored when resuming that session. Use `/sandboxed` to toggle protection for the current session. `/is_sandboxed` reports its state; `/is_sandboxed true|false` sets it explicitly (with argument completion). While enabled, process-spawning custom tools fail closed until they are routed through the sandbox. `load_dotenv()` source is allowed—the policy protects resolved paths rather than matching the word `env`.
 
+The same extension lets ordinary `bash` calls yield after 10 seconds without changing the model-visible tool schema. A yielded process continues in the background, appears in the `/mailbox` monitor, and pushes a batched follow-up when it exits. Use `/bash-yield <seconds|off>` to configure the session, `/bash-jobs` for a summary, and `/bash-stop <job-id|all>` to cancel running jobs. The existing `bash.timeout` remains a hard process deadline; the yield threshold never kills the command.
+
 The launchers are both unsandboxed and preserve the host environment:
 
 ```bash

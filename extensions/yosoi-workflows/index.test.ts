@@ -88,15 +88,23 @@ describe("yosoi-workflows extension", () => {
     );
 
     const running = yosoiMode(pi);
-    expect(running).toMatchObject({ label: "YS", detail: "FETCH", intervalMs: 140 });
-    expect(running?.frames?.map((frame) => frame.icon)).toEqual(["", "", "", ""]);
+    expect(running).toMatchObject({ label: "YS", detail: undefined, intervalMs: 16, tone: "accent" });
+    expect(running?.frames).toHaveLength(60);
+    expect(running?.frames?.every((frame) => frame.icon === "")).toBe(true);
+    expect(running?.frames?.[0]?.color).toEqual([70, 78, 92]);
+    expect(running?.frames?.[30]?.color).toEqual([74, 210, 255]);
 
-    await pi.events.get("tool_result")?.[0]?.(
-      { toolName: "bash", toolCallId: "run-1", content: [{ type: "text", text: '{"status":"ok"}' }], isError: false },
-      ctx,
-    );
+    pi.events.get("tool_call")?.[0]?.({ toolName: "bash", toolCallId: "run-2", input: { command: "uvx yosoi search cats --json" } }, ctx);
+    expect(yosoiMode(pi)).toMatchObject({ label: "YS", detail: "2", intervalMs: 16 });
 
-    expect(yosoiMode(pi)).toMatchObject({ label: "YS", detail: "1", icon: "", tone: "success" });
+    for (const toolCallId of ["run-1", "run-2"]) {
+      await pi.events.get("tool_result")?.[0]?.(
+        { toolName: "bash", toolCallId, content: [{ type: "text", text: '{"status":"ok"}' }], isError: false },
+        ctx,
+      );
+    }
+
+    expect(yosoiMode(pi)).toMatchObject({ label: "YS", detail: "2", icon: "", tone: "success" });
     expect(yosoiMode(pi)?.frames).toBeUndefined();
   });
 });

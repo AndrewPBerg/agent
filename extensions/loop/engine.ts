@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { publishInlineMode, smoothBreathingFrames } from "../lib/inline-modes";
 import {
   MAILBOX_CANCEL_RUN_EVENT,
   MAILBOX_SPAWN_ACCEPTED_EVENT,
@@ -27,6 +28,8 @@ import {
 const STATE_TYPE = "loop-run-state";
 const STATUS_KEY = "loop";
 const RESULT_MARKER = "lp_result";
+const LOOP_INLINE_MODE_ID = "loop";
+const LOOP_BREATHING_FRAMES = smoothBreathingFrames("", [22, 80, 48], [74, 222, 128]);
 
 type RepoSnapshot = { fingerprint: string; changedFiles: string[] };
 type PendingMailboxStage = { requests: Map<string, string>; results: Map<string, StageResult> };
@@ -137,11 +140,28 @@ export class LoopEngine {
   }
 
   private updateStatus() {
+    const active = this.run && ["running", "waiting"].includes(this.run.status);
+    const stage = this.currentStage();
+    const maxAttempts = stage && "maxAttempts" in stage ? stage.maxAttempts : 1;
+    publishInlineMode(
+      this.pi,
+      LOOP_INLINE_MODE_ID,
+      active
+        ? {
+            label: "LP",
+            detail: `${this.run!.attempt}/${maxAttempts}`,
+            tone: "success",
+            frames: LOOP_BREATHING_FRAMES,
+            intervalMs: 16,
+            priority: 400,
+          }
+        : undefined,
+    );
+
     if (!this.ctx || !this.run || ["completed", "stopped"].includes(this.run.status)) {
       this.ctx?.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
-    const stage = this.currentStage();
     this.ctx.ui.setStatus(
       STATUS_KEY,
       `lp:${this.run.status} ${this.run.currentStage + 1}/${this.run.stages.length}${stage ? ` ${stage.type}#${this.run.attempt}` : ""}`,
@@ -194,6 +214,7 @@ export class LoopEngine {
     }
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
     this.ctx?.ui.setStatus(STATUS_KEY, undefined);
+    publishInlineMode(this.pi, LOOP_INLINE_MODE_ID, undefined);
     this.ctx = undefined;
   }
 

@@ -36,13 +36,23 @@ describe("vim leader", () => {
     expect(terminalInput?.("y")).toEqual({ consume: true });
     expect(terminalInput?.(" ")).toEqual({ consume: true });
     expect(terminalInput?.("f")).toEqual({ consume: true });
+    expect(terminalInput?.(" ")).toEqual({ consume: true });
+    expect(terminalInput?.("u")).toEqual({ consume: true });
     expect(invoked).toEqual([
       { sequence: "m", action: "mailbox" },
       { sequence: "d", action: "details" },
       { sequence: "y", action: "yosoi" },
       { sequence: "f", action: "flameframe" },
+      { sequence: "u", action: "usage" },
     ]);
-    expect(LEADER_MAPPINGS).toEqual({ f: "flameframe", m: "mailbox", r: "reload", y: "yosoi", d: "details" });
+    expect(LEADER_MAPPINGS).toEqual({
+      f: "flameframe",
+      m: "mailbox",
+      r: "reload",
+      u: "usage",
+      y: "yosoi",
+      d: "details",
+    });
   });
 
   it("ignores Kitty key releases between leader and command", async () => {

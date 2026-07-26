@@ -1,0 +1,168 @@
+diff --git i/packages/tui/src/tui.ts w/packages/tui/src/tui.ts
+index a705488..0195e6f 100644
+--- i/packages/tui/src/tui.ts
++++ w/packages/tui/src/tui.ts
+@@ -23,6 +23,8 @@ const KITTY_SEQUENCE_PREFIX = "\x1b_G";
+ interface KittyImageHeader {
+ 	ids: number[];
+ 	rows: number;
++	columns: number;
++	column: number;
+ }
+ 
+ function parseKittyImageHeader(line: string): KittyImageHeader | undefined {
+@@ -35,6 +37,7 @@ function parseKittyImageHeader(line: string): KittyImageHeader | undefined {
+ 
+ 	const ids: number[] = [];
+ 	let rows = 1;
++	let columns = 0;
+ 	const params = line.slice(paramsStart, paramsEnd);
+ 	for (const param of params.split(",")) {
+ 		const [key, value] = param.split("=", 2);
+@@ -45,9 +48,11 @@ function parseKittyImageHeader(line: string): KittyImageHeader | undefined {
+ 			ids.push(numberValue);
+ 		} else if (key === "r") {
+ 			rows = numberValue;
++		} else if (key === "c") {
++			columns = numberValue;
+ 		}
+ 	}
+-	return { ids, rows };
++	return { ids, rows, columns, column: visibleWidth(line.slice(0, sequenceStart)) };
+ }
+ 
+ function extractKittyImageIds(line: string): number[] {
+@@ -1073,8 +1078,14 @@ export class TUI extends Container {
+ 
+ 		const viewportStart = Math.max(0, workingHeight - termHeight);
+ 
+-		// Composite each overlay
++		// Composite each overlay. Native Kitty images are terminal placements rather
++		// than text cells, so a higher overlay cannot overwrite them directly. Remove
++		// any lower image placement whose bounds intersect this overlay; the differential
++		// renderer deletes it now and redraws it when the overlay closes.
+ 		for (const { overlayLines, row, col, w } of rendered) {
++			const firstOverlayRow = viewportStart + row;
++			const lastOverlayRow = firstOverlayRow + overlayLines.length - 1;
++			this.suppressKittyImagesBehindOverlay(result, firstOverlayRow, lastOverlayRow, col, col + w - 1);
+ 			for (let i = 0; i < overlayLines.length; i++) {
+ 				const idx = viewportStart + row + i;
+ 				if (idx >= 0 && idx < result.length) {
+@@ -1172,6 +1183,27 @@ export class TUI extends Container {
+ 		return this.deleteKittyImages(ids);
+ 	}
+ 
++	private suppressKittyImagesBehindOverlay(
++		lines: string[],
++		firstOverlayRow: number,
++		lastOverlayRow: number,
++		firstOverlayColumn: number,
++		lastOverlayColumn: number,
++	): void {
++		for (let i = 0; i < lines.length; i++) {
++			const image = parseKittyImageHeader(lines[i]);
++			if (!image || image.ids.length === 0) continue;
++			const imageLastRow = i + image.rows - 1;
++			const imageLastColumn = image.column + image.columns - 1;
++			const intersectsRows = i <= lastOverlayRow && imageLastRow >= firstOverlayRow;
++			const intersectsColumns =
++				image.columns === 0 || (image.column <= lastOverlayColumn && imageLastColumn >= firstOverlayColumn);
++			if (intersectsRows && intersectsColumns) {
++				lines[i] = lines[i].replace(/\x1b_G[\s\S]*?\x1b\\/g, "");
++			}
++		}
++	}
++
+ 	/** Splice overlay content into a base line at a specific column. Single-pass optimized. */
+ 	private compositeLineAt(
+ 		baseLine: string,
+diff --git 1/packages/tui/test/overlay-image-layering.test.ts 2/packages/tui/test/overlay-image-layering.test.ts
+new file mode 100644
+index 0000000..5799a94
+--- /dev/null
++++ 2/packages/tui/test/overlay-image-layering.test.ts
+@@ -0,0 +1,84 @@
++import assert from "node:assert";
++import { describe, it } from "node:test";
++import type { Component } from "../src/tui.ts";
++import { TUI } from "../src/tui.ts";
++import { VirtualTerminal } from "./virtual-terminal.ts";
++
++type OverlayComposite = {
++	compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[];
++};
++
++class StaticOverlay implements Component {
++	private readonly lines: string[];
++	constructor(lines: string[]) {
++		this.lines = lines;
++	}
++	render(): string[] {
++		return this.lines;
++	}
++	invalidate(): void {}
++}
++
++const kittyImage = "\x1b_Ga=T,f=100,q=2,C=1,c=20,r=3,i=42;payload\x1b\\";
++
++function compositor(tui: TUI): OverlayComposite {
++	return tui as unknown as OverlayComposite;
++}
++
++describe("overlay image layering", () => {
++	it("suppresses a lower Kitty image when a modal intersects its reserved rows", () => {
++		const tui = new TUI(new VirtualTerminal(40, 10));
++		const base = Array.from({ length: 10 }, () => "");
++		base[3] = kittyImage;
++		tui.showOverlay(new StaticOverlay(["MODAL"]), { row: 4, col: 5, width: 10 });
++
++		const result = compositor(tui).compositeOverlays(base, 40, 10);
++
++		assert.equal(
++			result.some((line) => line.includes("\x1b_G")),
++			false,
++		);
++		assert.equal(result[4]?.includes("MODAL"), true);
++	});
++
++	it("suppresses a decorated Kitty image when a modal intersects a lower image row", () => {
++		const tui = new TUI(new VirtualTerminal(40, 10));
++		const base = Array.from({ length: 10 }, () => "");
++		base[3] = `│${kittyImage}${" ".repeat(18)}│`;
++		base[4] = `│${" ".repeat(38)}│`;
++		base[5] = `│${" ".repeat(38)}│`;
++		tui.showOverlay(new StaticOverlay(["MODAL"]), { row: 5, col: 5, width: 10 });
++
++		const result = compositor(tui).compositeOverlays(base, 40, 10);
++
++		assert.equal(
++			result.some((line) => line.includes("\x1b_G")),
++			false,
++		);
++		assert.equal(result[5]?.includes("MODAL"), true);
++	});
++
++	it("keeps a lower Kitty image when the overlay does not intersect its rows", () => {
++		const tui = new TUI(new VirtualTerminal(40, 10));
++		const base = Array.from({ length: 10 }, () => "");
++		base[6] = kittyImage;
++		tui.showOverlay(new StaticOverlay(["MODAL"]), { row: 1, col: 5, width: 10 });
++
++		const result = compositor(tui).compositeOverlays(base, 40, 10);
++
++		assert.equal(result[6]?.includes("\x1b_G"), true);
++		assert.equal(result[1]?.includes("MODAL"), true);
++	});
++
++	it("keeps a lower Kitty image when only its rows intersect", () => {
++		const tui = new TUI(new VirtualTerminal(40, 10));
++		const base = Array.from({ length: 10 }, () => "");
++		base[3] = `${" ".repeat(20)}${kittyImage}`;
++		tui.showOverlay(new StaticOverlay(["MODAL"]), { row: 4, col: 2, width: 10 });
++
++		const result = compositor(tui).compositeOverlays(base, 40, 10);
++
++		assert.equal(result[3]?.includes("\x1b_G"), true);
++		assert.equal(result[4]?.includes("MODAL"), true);
++	});
++});

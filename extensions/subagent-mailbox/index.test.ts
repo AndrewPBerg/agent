@@ -2,10 +2,11 @@ import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { INLINE_MODE_EVENT, type InlineModeState, type InlineModeUpdate } from "../lib/inline-modes";
 import { createMockContext, createMockPi } from "../test/mocks/pi-coding-agent";
 import { VIM_LEADER_EVENT } from "../vim-leader/protocol";
 import { __subagentMailboxTest, createSubagentMailbox } from "./index";
-import { MAILBOX_SPAWN_REQUEST_EVENT, MAILBOX_TERMINAL_EVENT } from "./protocol";
+import { MAILBOX_EXTERNAL_JOB_EVENT, MAILBOX_SPAWN_REQUEST_EVENT, MAILBOX_TERMINAL_EVENT } from "./protocol";
 
 class FakeChild extends EventEmitter {
   pid = 4242;
@@ -65,6 +66,56 @@ describe("push-based subagent mailbox", () => {
       }),
       { triggerTurn: true, deliverAs: "followUp" },
     );
+  });
+
+  it("lazily breathes one mailbox glyph while agents run and settles to a count", async () => {
+    const { child, ctx, pi } = setup();
+    let mode: InlineModeState | undefined;
+    pi.events.on(INLINE_MODE_EVENT, (data) => {
+      const update = data as InlineModeUpdate;
+      if (update.id === "mailbox") mode = update.state;
+    });
+
+    expect(mode).toBeUndefined();
+    await pi.tools.get("spawn_agent").execute("call-1", { agent: "reviewer", task: "review" }, undefined, undefined, ctx);
+
+    expect(mode).toMatchObject({ label: "MB", detail: undefined, intervalMs: 16, priority: 300 });
+    expect(mode?.frames).toHaveLength(60);
+    expect(mode?.frames?.every((frame) => frame.icon === "")).toBe(true);
+
+    await pi.tools.get("spawn_agent").execute("call-2", { agent: "reviewer", task: "review again" }, undefined, undefined, ctx);
+    expect(mode).toMatchObject({ label: "MB", detail: "2", intervalMs: 16, priority: 300 });
+
+    child.stdout.write(`${assistantEvent("done")}\n`);
+    child.emit("close", 0);
+    await vi.waitFor(() => expect(mode).toMatchObject({ label: "MB", detail: "2", icon: "", tone: "success" }));
+  });
+
+  it("includes external bash jobs in the inline mailbox indicator", async () => {
+    const { pi } = setup();
+    let mode: InlineModeState | undefined;
+    pi.events.on(INLINE_MODE_EVENT, (data) => {
+      const update = data as InlineModeUpdate;
+      if (update.id === "mailbox") mode = update.state;
+    });
+    const job = {
+      id: "bash-1000-1",
+      kind: "bash" as const,
+      agent: "bash",
+      task: "sleep 5",
+      cwd: "/repo",
+      status: "running" as const,
+      startedAt: 1_000,
+    };
+
+    pi.events.emit(MAILBOX_EXTERNAL_JOB_EVENT, { job });
+    expect(mode).toMatchObject({ label: "MB", detail: undefined, intervalMs: 16, priority: 300 });
+    expect(mode?.frames?.every((frame) => frame.icon === "")).toBe(true);
+
+    pi.events.emit(MAILBOX_EXTERNAL_JOB_EVENT, {
+      job: { ...job, status: "completed", completedAt: 2_000, output: "done" },
+    });
+    expect(mode).toMatchObject({ label: "MB", detail: "1", icon: "", tone: "success" });
   });
 
   it("kills running children on session shutdown without reactivating the old session", async () => {
@@ -170,6 +221,17 @@ describe("push-based subagent mailbox", () => {
     const { child, ctx, pi } = setup();
     await pi.events.get("session_start")?.[0]({}, ctx);
     await pi.tools.get("spawn_agent").execute("call-1", { agent: "reviewer", task: "inspect me" }, undefined, undefined, ctx);
+    pi.events.emit(MAILBOX_EXTERNAL_JOB_EVENT, {
+      job: {
+        id: "bash-1500-1",
+        kind: "bash",
+        agent: "bash",
+        task: "pnpm test",
+        cwd: ctx.cwd,
+        status: "running",
+        startedAt: 1_500,
+      },
+    });
 
     let rendered: string[] = [];
     let component: { render: (width: number) => string[]; handleInput: (data: string) => void; dispose: () => void } | undefined;
@@ -195,9 +257,9 @@ describe("push-based subagent mailbox", () => {
     pi.events.emit(VIM_LEADER_EVENT, { sequence: "m", action: "mailbox" });
     await vi.waitFor(() => expect(rendered.length).toBeGreaterThan(0));
 
-    expect(rendered.join("\n")).toContain("Mailbox monitor · 1 active · 0 pending · cap 6");
+    expect(rendered.join("\n")).toContain("Mailbox monitor · 2 active · 0 pending · agent cap 6");
     expect(rendered.join("\n")).toContain("Active");
-    expect(rendered.join("\n")).toContain("inspect me");
+    expect(rendered.join("\n")).toContain("pnpm test");
     expect(rendered.every((line) => line.length <= 90)).toBe(true);
 
     child.stdout.write(`${assistantEvent("done")}\n`);
